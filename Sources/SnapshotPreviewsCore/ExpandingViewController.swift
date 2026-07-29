@@ -22,6 +22,17 @@ public final class ExpandingViewController: UIHostingController<EmergeModifierVi
 
   private let HeightExpansionTimeLimitInSeconds: UInt64 = 30
 
+  /// Optional settle delay before the view is measured and expanded. Lets deferred
+  /// main-queue work — SwiftUI `.task` modifiers, async data fetches — hydrate the
+  /// view first, so sizing and capture see the final content instead of racing it.
+  private let settleDelay = ProcessInfo.processInfo
+    .environment["EMERGE_SNAPSHOT_RENDER_DELAY"]
+    .flatMap(Double.init) ?? 0
+
+  private var didSettle = false
+  private var settleScheduled = false
+  private var layout: PreviewLayout = .sizeThatFits
+
   private var didCall = false
   var previousHeight: CGFloat?
 
@@ -32,7 +43,11 @@ public final class ExpandingViewController: UIHostingController<EmergeModifierVi
   private var timer: Timer?
 
   public var expansionSettled: ((EmergeRenderingMode?, Float?, Bool?, Bool?, [String: String], [String: SnapshotMetadataValue], SnapshotGroup?, SnapshotCanvasTheme?, Error?) -> Void)? {
-    didSet { didCall = false }
+    didSet {
+      didCall = false
+      didSettle = settleDelay <= 0
+      settleScheduled = false
+    }
   }
 
   init<Content: View>(rootView: Content) {
@@ -58,6 +73,7 @@ public final class ExpandingViewController: UIHostingController<EmergeModifierVi
   }
 
   public func setupView(layout: PreviewLayout) {
+    self.layout = layout
     removeConstraints()
     switch layout {
     case let .fixed(width: width, height: height):
@@ -98,8 +114,28 @@ public final class ExpandingViewController: UIHostingController<EmergeModifierVi
       return
     }
 
+    // Wait out the settle delay before measuring: re-apply the layout constraints so
+    // the fitting size reflects the hydrated content, then let expansion run to
+    // completion and capture immediately on settle.
+    guard didSettle else {
+      scheduleSettleIfNeeded()
+      return
+    }
+
     updateHeight {
       runCallback()
+    }
+  }
+
+  private func scheduleSettleIfNeeded() {
+    guard !settleScheduled else { return }
+    settleScheduled = true
+    DispatchQueue.main.asyncAfter(deadline: .now() + settleDelay) { [weak self] in
+      guard let self, expansionSettled != nil, !didCall else { return }
+      didSettle = true
+      setupView(layout: layout)
+      view.setNeedsLayout()
+      updateScrollViewHeight()
     }
   }
 
