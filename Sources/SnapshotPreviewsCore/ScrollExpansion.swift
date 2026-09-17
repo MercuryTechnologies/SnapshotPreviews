@@ -31,38 +31,51 @@ protocol ScrollExpansionProviding: AnyObject, FirstScrollViewProviding {
   var supportsExpansion: Bool { get }
 }
 
+/// One step of the scroll-view expansion loop.
+enum ExpansionStep: Equatable {
+  /// The scroll view's content fits (or can't be made to fit); capture as-is.
+  case complete
+  /// Grow the height constraint by this many points and lay out again.
+  case grow(by: CGFloat)
+}
+
 extension ScrollExpansionProviding {
-  func updateHeight(_ complete: (() -> Void)) {
+  /// Decides the next expansion step without applying it, so callers can choose to apply the
+  /// height change synchronously (AppKit) or on the next run-loop turn (UIKit).
+  func nextExpansionStep() -> ExpansionStep {
     // If heightAnchor isn't set, this was a fixed size and we don't expand the scroll view
-    guard let heightAnchor else {
-      complete()
-      return
+    guard heightAnchor != nil else {
+      return .complete
     }
 
-    let supportsExpansion = supportsExpansion
-    let scrollView = firstScrollView
-    if let scrollView, supportsExpansion {
-      let diff = Int(scrollView.contentHeight - scrollView.visibleContentHeight)
-      if abs(diff) > 0 {
-        if previousHeight != nil || diff > 0 {
-          if let previousHeight {
-            // Check if expansion isn't working and we should give up.
-            // Could happen if the view is constrained to not grow, such as a half sheet
-            guard abs(previousHeight - scrollView.visibleContentHeight) >= 1 else {
-              complete()
-              return
-            }
-          }
-          previousHeight = scrollView.visibleContentHeight
-          heightAnchor.constant += CGFloat(diff)
-        } else {
-          complete()
-        }
-      } else {
-        complete()
+    guard let scrollView = firstScrollView, supportsExpansion else {
+      return .complete
+    }
+
+    let diff = Int(scrollView.contentHeight - scrollView.visibleContentHeight)
+    guard abs(diff) > 0, previousHeight != nil || diff > 0 else {
+      return .complete
+    }
+
+    if let previousHeight {
+      // Check if expansion isn't working and we should give up.
+      // Could happen if the view is constrained to not grow, such as a half sheet
+      guard abs(previousHeight - scrollView.visibleContentHeight) >= 1 else {
+        return .complete
       }
-    } else {
+    }
+    previousHeight = scrollView.visibleContentHeight
+    return .grow(by: CGFloat(diff))
+  }
+
+  /// Applies `nextExpansionStep()` synchronously. Used by AppKit, where the layout pass is
+  /// not re-entered from inside `layout()`.
+  func updateHeight(_ complete: (() -> Void)) {
+    switch nextExpansionStep() {
+    case .complete:
       complete()
+    case let .grow(diff):
+      heightAnchor?.constant += diff
     }
   }
 }
