@@ -26,7 +26,7 @@ public final class ExpandingViewController: UIHostingController<EmergeModifierVi
 
   /// How to wait for deferred main-queue work — SwiftUI `.task` modifiers, async data
   /// fetches — to hydrate the view before it is measured and captured. See `SettleConfiguration`.
-  private let settleConfiguration = SettleConfiguration.fromEnvironment()
+  private let settleConfiguration: SettleConfiguration
 
   private var didSettle = false
   private var settleObserver: LayoutSettleObserver?
@@ -35,7 +35,6 @@ public final class ExpandingViewController: UIHostingController<EmergeModifierVi
   private var didCall = false
   var previousHeight: CGFloat?
   private var expansionHistory = ExpansionHistory()
-  private var isExpansionStepPending = false
 
   var heightAnchor: NSLayoutConstraint?
   private var widthAnchor: NSLayoutConstraint?
@@ -50,11 +49,11 @@ public final class ExpandingViewController: UIHostingController<EmergeModifierVi
       settleObserver?.cancel()
       settleObserver = nil
       expansionHistory = ExpansionHistory()
-      isExpansionStepPending = false
     }
   }
 
-  init<Content: View>(rootView: Content) {
+  init<Content: View>(rootView: Content, settleConfiguration: SettleConfiguration = .fromEnvironment()) {
+    self.settleConfiguration = settleConfiguration
     super.init(rootView: EmergeModifierView(wrapped: rootView))
 
     if #available(iOS 16, *) {
@@ -128,8 +127,16 @@ public final class ExpandingViewController: UIHostingController<EmergeModifierVi
       return
     }
 
-    // A height change is already queued; this layout pass is the one it will trigger.
-    guard !isExpansionStepPending else { return }
+    // Once settled, expansion is driven step by step from `evaluateExpansion()`, not from
+    // layout passes, so a pass triggered by our own constraint change doesn't re-enter it.
+  }
+
+  /// Decides and applies one expansion step, then waits for layout to catch up before the
+  /// next. SwiftUI resizes its hosted scroll view asynchronously after the hosting view's
+  /// frame changes, so evaluating the next step in the very next layout pass reads a stale
+  /// visible height and ends expansion early — at a height that depends on timing.
+  private func evaluateExpansion() {
+    guard expansionSettled != nil, !didCall else { return }
 
     switch nextExpansionStep() {
     case .complete:
@@ -159,27 +166,53 @@ public final class ExpandingViewController: UIHostingController<EmergeModifierVi
       return
     }
 
-    isExpansionStepPending = true
     DispatchQueue.main.async { [weak self] in
-      guard let self else { return }
-      isExpansionStepPending = false
-      guard expansionSettled != nil, !didCall, let heightAnchor else { return }
+      guard let self, expansionSettled != nil, !didCall, let heightAnchor else { return }
       heightAnchor.constant += diff
       view.setNeedsLayout()
+      waitForLayoutToCatchUp { [weak self] in
+        self?.evaluateExpansion()
+      }
     }
+  }
+
+  /// Runs `completion` once the layer tree has stopped changing in response to the last
+  /// constraint change (adaptive mode), or after one run-loop turn (fixed-delay mode).
+  private func waitForLayoutToCatchUp(_ completion: @escaping () -> Void) {
+    guard settleConfiguration.isAdaptive else {
+      DispatchQueue.main.async(execute: completion)
+      return
+    }
+    var configuration = settleConfiguration
+    configuration.minimumDelay = 0
+    let observer = LayoutSettleObserver(view: view, configuration: configuration) { [weak self] _ in
+      guard let self, expansionSettled != nil, !didCall else { return }
+      settleObserver = nil
+      completion()
+    }
+    settleObserver = observer
+    observer.start()
   }
 
   private func scheduleSettleIfNeeded() {
     guard settleObserver == nil else { return }
     let observer = LayoutSettleObserver(view: view, configuration: settleConfiguration) { [weak self] outcome in
       guard let self, expansionSettled != nil, !didCall else { return }
+      settleObserver = nil
       if case let .timedOut(elapsed) = outcome {
         NSLog("ExpandingViewController: layout did not settle within \(elapsed)s; capturing as-is")
       }
       didSettle = true
       setupView(layout: layout)
       view.setNeedsLayout()
-      updateScrollViewHeight()
+      guard heightAnchor != nil, supportsExpansion, firstScrollView != nil else {
+        // Nothing to expand: the hydrated fitting size is applied by the capture's layout pass.
+        runCallback()
+        return
+      }
+      waitForLayoutToCatchUp { [weak self] in
+        self?.evaluateExpansion()
+      }
     }
     settleObserver = observer
     observer.start()
