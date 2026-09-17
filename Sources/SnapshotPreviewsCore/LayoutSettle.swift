@@ -103,40 +103,106 @@ struct ExpansionHistory: Equatable {
 /// visibility, redrawn contents, and scroll-view content sizes. Two equal fingerprints taken
 /// on consecutive frames mean the preview has stopped changing.
 struct LayoutFingerprint: Equatable {
-  let hash: Int
-  /// True when any layer in the tree has an in-flight Core Animation animation.
-  let isAnimating: Bool
+  private(set) var hash = 0
+  /// True when any layer in the tree has an in-flight, finite Core Animation animation.
+  /// Indefinitely repeating animations (spinners, pulses) never end, so waiting on them
+  /// would only ever hit the ceiling; they are ignored and captured mid-cycle as before.
+  private(set) var isAnimating = false
+
+  /// Diagnostics for `EMERGE_SNAPSHOT_SETTLE_DEBUG`: a description of each layer that is
+  /// animating, so a preview that keeps hitting the ceiling can be traced to its source.
+  private(set) var animatingLayerDescriptions: [String] = []
+  /// Per-layer hashes in visit order, used to describe what changed between two frames.
+  private var layerHashes: [Int] = []
+  private var layerDescriptions: [String] = []
+
+  static var isDebugEnabled = ProcessInfo.processInfo.environment["EMERGE_SNAPSHOT_SETTLE_DEBUG"] != nil
+
+  static func == (lhs: LayoutFingerprint, rhs: LayoutFingerprint) -> Bool {
+    lhs.hash == rhs.hash && lhs.isAnimating == rhs.isAnimating
+  }
 
   @MainActor
   init(view: UIView) {
     var hasher = Hasher()
     var animating = false
-    Self.visit(layer: view.layer, hasher: &hasher, animating: &animating)
+    visit(layer: view.layer, depth: 0, hasher: &hasher, animating: &animating)
     hash = hasher.finalize()
     isAnimating = animating
   }
 
+  /// Describes the first layers whose hash differs from `previous`, for debug logging.
+  func describeChanges(since previous: LayoutFingerprint, limit: Int = 5) -> [String] {
+    guard Self.isDebugEnabled else { return [] }
+    if layerHashes.count != previous.layerHashes.count {
+      return ["layer count changed \(previous.layerHashes.count) → \(layerHashes.count)"]
+    }
+    var changes: [String] = []
+    for (index, (old, new)) in zip(previous.layerHashes, layerHashes).enumerated() where old != new {
+      changes.append(layerDescriptions[index])
+      if changes.count == limit { break }
+    }
+    return changes
+  }
+
   @MainActor
-  private static func visit(layer: CALayer, hasher: inout Hasher, animating: inout Bool) {
-    hasher.combine(quantize(layer.bounds))
-    hasher.combine(quantize(layer.position))
-    hasher.combine(layer.isHidden)
-    hasher.combine(quantize(CGFloat(layer.opacity)))
+  private mutating func visit(layer: CALayer, depth: Int, hasher: inout Hasher, animating: inout Bool) {
+    var layerHasher = Hasher()
+    layerHasher.combine(Self.quantize(layer.bounds))
+    layerHasher.combine(Self.quantize(layer.position))
+    layerHasher.combine(layer.isHidden)
+    layerHasher.combine(Self.quantize(CGFloat(layer.opacity)))
     // `contents` is replaced whenever a drawn layer (text, images, shapes) redraws, which is how
     // same-size content changes such as skeleton → data are detected.
     if let contents = layer.contents {
-      hasher.combine(ObjectIdentifier(contents as AnyObject))
+      layerHasher.combine(ObjectIdentifier(contents as AnyObject))
     }
     if let scrollView = layer.delegate as? UIScrollView {
-      hasher.combine(quantize(scrollView.contentSize))
-      hasher.combine(quantize(scrollView.contentOffset))
+      layerHasher.combine(Self.quantize(scrollView.contentSize))
+      layerHasher.combine(Self.quantize(scrollView.contentOffset))
     }
-    if let keys = layer.animationKeys(), !keys.isEmpty {
+    let layerHash = layerHasher.finalize()
+    hasher.combine(layerHash)
+
+    if Self.hasFiniteAnimation(layer) {
       animating = true
+      if Self.isDebugEnabled {
+        animatingLayerDescriptions.append(Self.describe(layer, depth: depth) + " keys=\(layer.animationKeys() ?? [])")
+      }
+    }
+    if Self.isDebugEnabled {
+      layerHashes.append(layerHash)
+      layerDescriptions.append(Self.describe(layer, depth: depth))
     }
     for sublayer in layer.sublayers ?? [] {
-      visit(layer: sublayer, hasher: &hasher, animating: &animating)
+      visit(layer: sublayer, depth: depth + 1, hasher: &hasher, animating: &animating)
     }
+  }
+
+  @MainActor
+  static func hasFiniteAnimation(_ layer: CALayer) -> Bool {
+    guard let keys = layer.animationKeys(), !keys.isEmpty else { return false }
+    return keys.contains { key in
+      guard let animation = layer.animation(forKey: key) else { return false }
+      return !isIndefinite(animation)
+    }
+  }
+
+  static func isIndefinite(_ animation: CAAnimation) -> Bool {
+    if animation.repeatCount == .infinity || animation.repeatDuration == .infinity {
+      return true
+    }
+    if let group = animation as? CAAnimationGroup {
+      return group.animations?.contains(where: isIndefinite) ?? false
+    }
+    return false
+  }
+
+  @MainActor
+  private static func describe(_ layer: CALayer, depth: Int) -> String {
+    let owner = (layer.delegate as? UIView).map { String(describing: type(of: $0)) } ?? String(describing: type(of: layer))
+    let bounds = layer.bounds
+    return "\(String(repeating: "  ", count: depth))\(owner) \(Int(bounds.width))x\(Int(bounds.height))"
   }
 
   /// Quantize to 1/100 pt so float noise between identical layouts doesn't read as a change.
@@ -248,13 +314,35 @@ final class LayoutSettleObserver {
     } else {
       consecutiveStableFrames = 1
     }
+    previousFingerprintForDebug = lastFingerprint
     lastFingerprint = fingerprint
 
     if consecutiveStableFrames >= configuration.requiredStableFrames {
       finish(.stable(elapsed: elapsed))
     } else if elapsed >= timeout {
+      if LayoutFingerprint.isDebugEnabled {
+        logInstability(fingerprint)
+      }
       finish(.timedOut(elapsed: elapsed))
     }
+  }
+
+  private var previousFingerprintForDebug: LayoutFingerprint?
+
+  private func logInstability(_ fingerprint: LayoutFingerprint) {
+    var lines = ["LayoutSettleObserver: timed out; last frame was unstable because:"]
+    if fingerprint.isAnimating {
+      lines.append("  animating layers:")
+      lines.append(contentsOf: fingerprint.animatingLayerDescriptions.prefix(5).map { "    " + $0 })
+    }
+    if let previous = previousFingerprintForDebug {
+      let changes = fingerprint.describeChanges(since: previous)
+      if !changes.isEmpty {
+        lines.append("  changed layers:")
+        lines.append(contentsOf: changes.map { "    " + $0 })
+      }
+    }
+    NSLog("%@", lines.joined(separator: "\n"))
   }
 
   private func finish(_ outcome: SettleOutcome) {

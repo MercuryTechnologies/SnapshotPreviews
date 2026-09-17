@@ -169,6 +169,36 @@ final class LayoutFingerprintTests: XCTestCase {
     XCTAssertEqual(LayoutFingerprint.quantize(-0.004), 0)
   }
 
+  func testIndefiniteAnimationsAreNotInstability() {
+    let (root, child, _) = makeHierarchy()
+    let spin = CABasicAnimation(keyPath: "transform.rotation")
+    spin.fromValue = 0
+    spin.toValue = Double.pi * 2
+    spin.duration = 1
+    spin.repeatCount = .infinity
+    child.layer.add(spin, forKey: "spin")
+    XCTAssertFalse(LayoutFingerprint(view: root).isAnimating)
+
+    let fade = CABasicAnimation(keyPath: "opacity")
+    fade.fromValue = 1
+    fade.toValue = 0
+    fade.duration = 1
+    child.layer.add(fade, forKey: "fade")
+    XCTAssertTrue(LayoutFingerprint(view: root).isAnimating)
+  }
+
+  func testIndefiniteAnimationGroupIsRecognized() {
+    let inner = CABasicAnimation(keyPath: "opacity")
+    inner.repeatCount = .infinity
+    let group = CAAnimationGroup()
+    group.animations = [inner]
+    XCTAssertTrue(LayoutFingerprint.isIndefinite(group))
+    XCTAssertFalse(LayoutFingerprint.isIndefinite(CABasicAnimation(keyPath: "opacity")))
+    let repeating = CABasicAnimation(keyPath: "opacity")
+    repeating.repeatDuration = .infinity
+    XCTAssertTrue(LayoutFingerprint.isIndefinite(repeating))
+  }
+
   func testSubPixelNoiseIsIgnored() {
     let (root, child, _) = makeHierarchy()
     let before = LayoutFingerprint(view: root)
