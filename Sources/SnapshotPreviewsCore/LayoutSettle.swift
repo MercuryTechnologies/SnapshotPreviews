@@ -140,8 +140,18 @@ struct LayoutFingerprint: Equatable {
   }
 
   /// Quantize to 1/100 pt so float noise between identical layouts doesn't read as a change.
-  private static func quantize(_ value: CGFloat) -> Int {
-    Int((value * 100).rounded())
+  /// Layers can carry NaN or infinite geometry (SwiftUI warns "Invalid frame dimension" but
+  /// still commits them), and `Int(_:)` traps on those, so map them to sentinels instead.
+  static func quantize(_ value: CGFloat) -> Int {
+    guard value.isFinite else {
+      if value.isNaN { return Int.min }
+      return value > 0 ? Int.max : Int.min + 1
+    }
+    let scaled = (value * 100).rounded()
+    guard abs(scaled) < CGFloat(Int.max / 2) else {
+      return scaled > 0 ? Int.max : Int.min + 1
+    }
+    return Int(scaled)
   }
 
   private static func quantize(_ point: CGPoint) -> [Int] {

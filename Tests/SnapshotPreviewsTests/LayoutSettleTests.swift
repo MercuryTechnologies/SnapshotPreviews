@@ -156,6 +156,19 @@ final class LayoutFingerprintTests: XCTestCase {
     XCTAssertNotEqual(before, LayoutFingerprint(view: root))
   }
 
+  func testNonFiniteGeometryDoesNotTrap() {
+    // Core Animation rejects NaN bounds when set directly, but SwiftUI can still commit
+    // layers with non-finite geometry ("Invalid frame dimension" runtime warning), which
+    // trapped `Int(_:)` in the quantizer on CI. The mapping must be total.
+    XCTAssertEqual(LayoutFingerprint.quantize(CGFloat.nan), Int.min)
+    XCTAssertEqual(LayoutFingerprint.quantize(CGFloat.infinity), Int.max)
+    XCTAssertEqual(LayoutFingerprint.quantize(-CGFloat.infinity), Int.min + 1)
+    XCTAssertEqual(LayoutFingerprint.quantize(CGFloat.greatestFiniteMagnitude), Int.max)
+    XCTAssertEqual(LayoutFingerprint.quantize(-CGFloat.greatestFiniteMagnitude), Int.min + 1)
+    XCTAssertEqual(LayoutFingerprint.quantize(12.345), 1235)
+    XCTAssertEqual(LayoutFingerprint.quantize(-0.004), 0)
+  }
+
   func testSubPixelNoiseIsIgnored() {
     let (root, child, _) = makeHierarchy()
     let before = LayoutFingerprint(view: root)
