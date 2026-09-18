@@ -199,10 +199,6 @@ struct LayoutFingerprint: Equatable {
     if animation.repeatCount == .infinity || animation.repeatDuration == .infinity {
       return true
     }
-    // A zero-duration animation is not "in flight" either way.
-    if animation.duration == 0, !(animation is CAAnimationGroup) {
-      return true
-    }
     if let group = animation as? CAAnimationGroup {
       return group.animations?.contains(where: isIndefinite) ?? false
     }

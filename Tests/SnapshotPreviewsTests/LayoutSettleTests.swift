@@ -194,9 +194,9 @@ final class LayoutFingerprintTests: XCTestCase {
     child.layer.add(match, forKey: "match-bounds")
     XCTAssertFalse(LayoutFingerprint(view: root).isAnimating)
 
-    let zero = CABasicAnimation(keyPath: "opacity")
-    zero.duration = 0
-    XCTAssertTrue(LayoutFingerprint.isIndefinite(zero))
+    // The same animation under an ordinary key is a real transition.
+    child.layer.add(match, forKey: "bounds")
+    XCTAssertTrue(LayoutFingerprint(view: root).isAnimating)
   }
 
   func testIndefiniteAnimationGroupIsRecognized() {
