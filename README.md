@@ -139,6 +139,15 @@ SnapshotPreviews supports these test-runner environment variables:
 
 These modes are mutually exclusive. If `TEST_RUNNER_SNAPSHOTS_ALL_IMAGE_NAMES_FILE` is set, SnapshotPreviews writes image names only and does not render or export snapshot images.
 
+Previews that hydrate asynchronously (SwiftUI `.task` modifiers, mocked network responses) can be given time to finish before they are measured and captured:
+
+| Variable | Description |
+| --- | --- |
+| `TEST_RUNNER_EMERGE_SNAPSHOT_SETTLE_TIMEOUT` | Enables adaptive settling. After the main queue drains, each preview is captured as soon as its layer tree has been identical for `EMERGE_SNAPSHOT_SETTLE_STABLE_FRAMES` consecutive frames (default 2), or when this many seconds have elapsed. Recommended over a fixed delay: static previews settle in a couple of frames, and a preview that never stops changing can't stall the run. |
+| `TEST_RUNNER_EMERGE_SNAPSHOT_RENDER_DELAY` | Fixed delay in seconds before measuring and capturing. With adaptive settling enabled it acts as a minimum wait; on its own it is the whole wait. |
+
+Scroll-view expansion is bounded as well: each height step yields to the run loop, the loop gives up after 50 steps or when the height oscillates, and a preview that still hasn't converged after 8 seconds fails with `RenderingError.expandingViewTimeout` instead of hanging the test process.
+
 > [!NOTE]
 > The `TEST_RUNNER_` prefix is how Xcode forwards an environment variable from `xcodebuild` into the test runner process. Inside the runner, SnapshotPreviews reads the variable without that prefix.
 
