@@ -179,17 +179,19 @@ struct LayoutFingerprint: Equatable {
     }
   }
 
-  /// Animation keys that stay attached for as long as a layer exists and never describe an
-  /// in-flight transition. Liquid Glass (`UISDFElementView`) keeps `match-bounds`,
-  /// `match-position`, `match-mesh` … animations on its element layers to track the view
-  /// they mirror; a screen with one glass button would otherwise never settle.
-  static let persistentAnimationKeyPrefixes = ["match-"]
+  /// Liquid Glass keeps geometry-tracking animations attached for as long as a layer exists:
+  /// `match-bounds`, `match-position`, `match-mesh` … on `UISDFElementView` element layers,
+  /// and `_UILiquidLensView.punchout.matchPosition` on lens punch-outs. They never describe
+  /// an in-flight transition, and a screen with one glass button would otherwise never settle.
+  static func isPersistentTrackingAnimationKey(_ key: String) -> Bool {
+    key.lowercased().contains("match")
+  }
 
   @MainActor
   static func hasFiniteAnimation(_ layer: CALayer) -> Bool {
     guard let keys = layer.animationKeys(), !keys.isEmpty else { return false }
     return keys.contains { key in
-      guard !persistentAnimationKeyPrefixes.contains(where: key.hasPrefix) else { return false }
+      guard !isPersistentTrackingAnimationKey(key) else { return false }
       guard let animation = layer.animation(forKey: key) else { return false }
       return !isIndefinite(animation)
     }
