@@ -179,10 +179,17 @@ struct LayoutFingerprint: Equatable {
     }
   }
 
+  /// Animation keys that stay attached for as long as a layer exists and never describe an
+  /// in-flight transition. Liquid Glass (`UISDFElementView`) keeps `match-bounds`,
+  /// `match-position`, `match-mesh` … animations on its element layers to track the view
+  /// they mirror; a screen with one glass button would otherwise never settle.
+  static let persistentAnimationKeyPrefixes = ["match-"]
+
   @MainActor
   static func hasFiniteAnimation(_ layer: CALayer) -> Bool {
     guard let keys = layer.animationKeys(), !keys.isEmpty else { return false }
     return keys.contains { key in
+      guard !persistentAnimationKeyPrefixes.contains(where: key.hasPrefix) else { return false }
       guard let animation = layer.animation(forKey: key) else { return false }
       return !isIndefinite(animation)
     }
@@ -190,6 +197,10 @@ struct LayoutFingerprint: Equatable {
 
   static func isIndefinite(_ animation: CAAnimation) -> Bool {
     if animation.repeatCount == .infinity || animation.repeatDuration == .infinity {
+      return true
+    }
+    // A zero-duration animation is not "in flight" either way.
+    if animation.duration == 0, !(animation is CAAnimationGroup) {
       return true
     }
     if let group = animation as? CAAnimationGroup {
@@ -245,7 +256,12 @@ final class LayoutSettleObserver {
   private var startTime: CFTimeInterval = 0
   private var lastFingerprint: LayoutFingerprint?
   private var consecutiveStableFrames = 0
+  private var observedFrames = 0
   private var isCancelled = false
+
+  /// Extra time past `timeout` that the belt-and-braces fallback waits, so a view whose first
+  /// frame alone outlasts the ceiling still gets the minimum number of stability checks.
+  static let fallbackGrace: TimeInterval = 0.5
 
   init(view: UIView, configuration: SettleConfiguration, onSettled: @escaping (SettleOutcome) -> Void) {
     self.view = view
@@ -298,7 +314,7 @@ final class LayoutSettleObserver {
     // Belt and braces: if the display link never fires (no screen, paused run loop), the
     // timeout still wins so the lane can't stall here.
     let remaining = max(0, timeout - (CACurrentMediaTime() - startTime))
-    DispatchQueue.main.asyncAfter(deadline: .now() + remaining + 0.1) { [weak self] in
+    DispatchQueue.main.asyncAfter(deadline: .now() + remaining + Self.fallbackGrace) { [weak self] in
       guard let self, !isCancelled, displayLink != nil else { return }
       finish(.timedOut(elapsed: CACurrentMediaTime() - startTime))
     }
@@ -308,6 +324,7 @@ final class LayoutSettleObserver {
     guard !isCancelled, let timeout = configuration.timeout else { return }
     let elapsed = CACurrentMediaTime() - startTime
     let fingerprint = LayoutFingerprint(view: view)
+    observedFrames += 1
 
     if !fingerprint.isAnimating, fingerprint == lastFingerprint {
       consecutiveStableFrames += 1
@@ -319,7 +336,9 @@ final class LayoutSettleObserver {
 
     if consecutiveStableFrames >= configuration.requiredStableFrames {
       finish(.stable(elapsed: elapsed))
-    } else if elapsed >= timeout {
+    } else if elapsed >= timeout, observedFrames >= configuration.requiredStableFrames {
+      // A slow first layout can push the first tick past the ceiling; always look at the
+      // minimum number of frames before declaring the view unstable.
       if LayoutFingerprint.isDebugEnabled {
         logInstability(fingerprint)
       }

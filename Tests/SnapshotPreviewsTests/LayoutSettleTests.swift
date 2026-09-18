@@ -187,6 +187,18 @@ final class LayoutFingerprintTests: XCTestCase {
     XCTAssertTrue(LayoutFingerprint(view: root).isAnimating)
   }
 
+  func testPersistentMatchAnimationsAreIgnored() {
+    let (root, child, _) = makeHierarchy()
+    let match = CABasicAnimation(keyPath: "bounds")
+    match.duration = 0.25
+    child.layer.add(match, forKey: "match-bounds")
+    XCTAssertFalse(LayoutFingerprint(view: root).isAnimating)
+
+    let zero = CABasicAnimation(keyPath: "opacity")
+    zero.duration = 0
+    XCTAssertTrue(LayoutFingerprint.isIndefinite(zero))
+  }
+
   func testIndefiniteAnimationGroupIsRecognized() {
     let inner = CABasicAnimation(keyPath: "opacity")
     inner.repeatCount = .infinity
