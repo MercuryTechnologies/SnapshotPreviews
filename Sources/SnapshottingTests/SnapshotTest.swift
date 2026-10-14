@@ -193,17 +193,6 @@ open class SnapshotTest: PreviewBaseTest, PreviewFilters {
     nil
   }
 
-  /// Returns an optional array of previews (regexes matched against the preview type name or
-  /// file ID) whose side effects later previews depend on.
-  ///
-  /// Rendering a preview can leave process-wide state that later previews pick up. A serial run
-  /// renders everything in one process, but a shard starts partway through, so before its first
-  /// test a process renders (without exporting) each of these previews that a serial run would
-  /// have rendered earlier.
-  open class func warmUpPreviews() -> [String]? {
-    nil
-  }
-
   #if canImport(UIKit) && !os(watchOS) && !os(visionOS) && !os(tvOS)
   open class func setupA11y() -> ((UIViewController, UIWindow, PreviewLayout) -> UIView)? {
     return nil
@@ -232,7 +221,6 @@ open class SnapshotTest: PreviewBaseTest, PreviewFilters {
   }
     #endif
   private static var renderingStrategy: RenderingStrategy? = nil
-  @MainActor private static var didWarmUp = false
   @MainActor private static var ciExportCoordinator: SnapshotCIExportCoordinator?
   @MainActor private static var allSnapshotImageNamesWriter: AllSnapshotImageNamesWriter?
 
@@ -301,32 +289,6 @@ open class SnapshotTest: PreviewBaseTest, PreviewFilters {
     return imageNames
   }
 
-  @MainActor
-  private final func warmUp(before firstPreview: DiscoveredPreviewAndIndex, with strategy: RenderingStrategy) {
-    guard
-      let patterns = Self.warmUpPreviews(),
-      let firstTest = testSelectorNames[previewKey(typeName: firstPreview.preview.typeName, index: firstPreview.index)]
-    else { return }
-
-    let warmUpTypes = Self.previews.filter { previewType in
-      patterns.contains { pattern in
-        [previewType.typeName, previewType.fileID].contains { $0?.range(of: pattern, options: .regularExpression) != nil }
-      }
-    }
-    for previewType in warmUpTypes {
-      for (index, preview) in previewType.previews.enumerated() {
-        guard let test = testSelectorNames[previewKey(typeName: previewType.typeName, index: index)], test < firstTest else {
-          continue
-        }
-        let expectation = XCTestExpectation()
-        strategy.render(preview: preview) { _ in
-          expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 10)
-      }
-    }
-  }
-
   /// Tests a specific preview by rendering it and generating a snapshot. Subclasses should NOT override this method.
   ///
   /// This method renders the specified preview using the appropriate rendering strategy,
@@ -353,11 +315,6 @@ open class SnapshotTest: PreviewBaseTest, PreviewFilters {
       strategy = Self.makeRenderingStrategy()
       #endif
       Self.renderingStrategy = strategy
-    }
-
-    if !Self.didWarmUp {
-      Self.didWarmUp = true
-      warmUp(before: discoveredPreview, with: strategy)
     }
 
     var result: SnapshotResult? = nil
