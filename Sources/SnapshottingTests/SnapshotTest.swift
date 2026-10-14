@@ -193,6 +193,16 @@ open class SnapshotTest: PreviewBaseTest, PreviewFilters {
     nil
   }
 
+  /// Returns an optional array of previews (regex, like `snapshotPreviews()`) to render once per
+  /// test process before its first snapshot, without exporting them.
+  ///
+  /// Rendering a preview can leave process-wide state behind that later previews depend on. A
+  /// serial run renders every preview in one process, but a sharded run splits them across
+  /// processes, so use this to recreate state a shard would otherwise miss.
+  open class func warmUpPreviews() -> [String]? {
+    nil
+  }
+
   #if canImport(UIKit) && !os(watchOS) && !os(visionOS) && !os(tvOS)
   open class func setupA11y() -> ((UIViewController, UIWindow, PreviewLayout) -> UIView)? {
     return nil
@@ -221,6 +231,7 @@ open class SnapshotTest: PreviewBaseTest, PreviewFilters {
   }
     #endif
   private static var renderingStrategy: RenderingStrategy? = nil
+  @MainActor private static var didWarmUp = false
   @MainActor private static var ciExportCoordinator: SnapshotCIExportCoordinator?
   @MainActor private static var allSnapshotImageNamesWriter: AllSnapshotImageNamesWriter?
 
@@ -289,6 +300,27 @@ open class SnapshotTest: PreviewBaseTest, PreviewFilters {
     return imageNames
   }
 
+  @MainActor
+  private func warmUp(with strategy: RenderingStrategy) {
+    guard let patterns = Self.warmUpPreviews(), !patterns.isEmpty else { return }
+
+    let warmUpTypes = FindPreviews.findPreviews(
+      included: patterns,
+      excluded: nil,
+      includedModules: Self.snapshotPreviewModules(),
+      excludedModules: Self.excludedSnapshotPreviewModules()
+    )
+    for previewType in warmUpTypes {
+      for preview in previewType.previews {
+        let expectation = XCTestExpectation()
+        strategy.render(preview: preview) { _ in
+          expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 10)
+      }
+    }
+  }
+
   /// Tests a specific preview by rendering it and generating a snapshot. Subclasses should NOT override this method.
   ///
   /// This method renders the specified preview using the appropriate rendering strategy,
@@ -315,6 +347,11 @@ open class SnapshotTest: PreviewBaseTest, PreviewFilters {
       strategy = Self.makeRenderingStrategy()
       #endif
       Self.renderingStrategy = strategy
+    }
+
+    if !Self.didWarmUp {
+      Self.didWarmUp = true
+      warmUp(with: strategy)
     }
 
     var result: SnapshotResult? = nil
