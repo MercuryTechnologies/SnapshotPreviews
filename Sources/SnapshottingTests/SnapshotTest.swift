@@ -301,7 +301,7 @@ open class SnapshotTest: PreviewBaseTest, PreviewFilters {
   }
 
   @MainActor
-  private func warmUp(with strategy: RenderingStrategy) {
+  private final func warmUp(with strategy: RenderingStrategy) {
     guard let patterns = Self.warmUpPreviews(), !patterns.isEmpty else { return }
 
     let warmUpTypes = FindPreviews.findPreviews(
