@@ -38,11 +38,15 @@ final class AllSnapshotImageNamesTests: XCTestCase {
     XCTAssertEqual(deviceName, "iPhone 15")
   }
 
-  func testShardsPartitionEveryTestIndexExactlyOnce() {
-    let shards = (0..<3).map { SnapshotShard(index: $0, count: 3) }
+  func testShardsCoverEveryPositionContiguouslyAndInOrder() {
+    for total in [0, 1, 5, 867] {
+      let ranges = (0..<4).map { SnapshotShard(index: $0, count: 4).positions(total: total) }
 
-    for testIndex in 0..<20 {
-      XCTAssertEqual(shards.filter { $0.contains(testIndex: testIndex) }.count, 1)
+      XCTAssertEqual(ranges.first?.lowerBound, 0)
+      XCTAssertEqual(ranges.last?.upperBound, total)
+      for (previous, next) in zip(ranges, ranges.dropFirst()) {
+        XCTAssertEqual(previous.upperBound, next.lowerBound)
+      }
     }
   }
 

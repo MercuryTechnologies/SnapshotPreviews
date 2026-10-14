@@ -193,12 +193,13 @@ open class SnapshotTest: PreviewBaseTest, PreviewFilters {
     nil
   }
 
-  /// Returns an optional array of previews (regex, like `snapshotPreviews()`) to render once per
-  /// test process before its first snapshot, without exporting them.
+  /// Returns an optional array of previews (regexes matched against the preview type name or
+  /// file ID) whose side effects later previews depend on.
   ///
-  /// Rendering a preview can leave process-wide state behind that later previews depend on. A
-  /// serial run renders every preview in one process, but a sharded run splits them across
-  /// processes, so use this to recreate state a shard would otherwise miss.
+  /// Rendering a preview can leave process-wide state that later previews pick up. A serial run
+  /// renders everything in one process, but a shard starts partway through, so before its first
+  /// test a process renders (without exporting) each of these previews that a serial run would
+  /// have rendered earlier.
   open class func warmUpPreviews() -> [String]? {
     nil
   }
@@ -301,17 +302,22 @@ open class SnapshotTest: PreviewBaseTest, PreviewFilters {
   }
 
   @MainActor
-  private final func warmUp(with strategy: RenderingStrategy) {
-    guard let patterns = Self.warmUpPreviews(), !patterns.isEmpty else { return }
+  private final func warmUp(before firstPreview: DiscoveredPreviewAndIndex, with strategy: RenderingStrategy) {
+    guard
+      let patterns = Self.warmUpPreviews(),
+      let firstTest = testSelectorNames[previewKey(typeName: firstPreview.preview.typeName, index: firstPreview.index)]
+    else { return }
 
-    let warmUpTypes = FindPreviews.findPreviews(
-      included: patterns,
-      excluded: nil,
-      includedModules: Self.snapshotPreviewModules(),
-      excludedModules: Self.excludedSnapshotPreviewModules()
-    )
+    let warmUpTypes = Self.previews.filter { previewType in
+      patterns.contains { pattern in
+        [previewType.typeName, previewType.fileID].contains { $0?.range(of: pattern, options: .regularExpression) != nil }
+      }
+    }
     for previewType in warmUpTypes {
-      for preview in previewType.previews {
+      for (index, preview) in previewType.previews.enumerated() {
+        guard let test = testSelectorNames[previewKey(typeName: previewType.typeName, index: index)], test < firstTest else {
+          continue
+        }
         let expectation = XCTestExpectation()
         strategy.render(preview: preview) { _ in
           expectation.fulfill()
@@ -351,7 +357,7 @@ open class SnapshotTest: PreviewBaseTest, PreviewFilters {
 
     if !Self.didWarmUp {
       Self.didWarmUp = true
-      warmUp(with: strategy)
+      warmUp(before: discoveredPreview, with: strategy)
     }
 
     var result: SnapshotResult? = nil

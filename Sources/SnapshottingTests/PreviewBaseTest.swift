@@ -21,8 +21,11 @@ struct DiscoveredPreviewAndIndex {
   let index: Int
 }
 
-/// One slice of the discovered previews. Xcode's parallel testing distributes work by test
-/// class, so splitting previews across several subclasses lets them run on simulator clones.
+/// One slice of the discovered previews, for running them across several processes or machines.
+///
+/// Rendering a preview can leave process-wide state that later previews pick up, so each shard
+/// takes a contiguous run of the tests in execution order. That way every preview follows the same
+/// previews it would in a single serial run, except the first test of each shard.
 public struct SnapshotShard {
   public let index: Int
   public let count: Int
@@ -33,14 +36,23 @@ public struct SnapshotShard {
     self.count = count
   }
 
-  func contains(testIndex: Int) -> Bool {
-    testIndex % count == index
+  /// Positions this shard covers among `total` tests sorted in execution order.
+  func positions(total: Int) -> Range<Int> {
+    (total * index / count)..<(total * (index + 1) / count)
   }
 }
 
 // Every class rebuilds this same list during discovery and test selectors index into it, so
 // shard subclasses running in one process all resolve to the right previews.
 var previews: [DiscoveredPreviewAndIndex] = []
+
+// The test selector of every discovered preview, including ones other shards test, keyed by
+// `previewKey(typeName:index:)`. Selectors sort in execution order.
+var testSelectorNames: [String: String] = [:]
+
+func previewKey(typeName: String, index: Int) -> String {
+  "\(typeName)#\(index)"
+}
 
 @objc(EMGPreviewBaseTest)
 open class PreviewBaseTest: XCTestCase {
@@ -91,13 +103,12 @@ open class PreviewBaseTest: XCTestCase {
 
     @MainActor
     class func addMethods() -> [String] {
-      var dynamicTestSelectors: [String] = []
       let discoveredPreviews = discoverPreviews()
       previews = []
+      testSelectorNames = [:]
       var i = 0
 
       let currentDeviceName = SnapshotPreviewDestination.currentDeviceName()
-      let shard = snapshotShard()
 
       for discoveredPreview in discoveredPreviews {
         let typeName = discoveredPreview.typeName
@@ -113,25 +124,24 @@ open class PreviewBaseTest: XCTestCase {
             continue
           }
 
-          let preview = DiscoveredPreviewAndIndex(preview: discoveredPreview, index: j)
-          previews.append(preview)
-
-          if let shard, !shard.contains(testIndex: i) {
-            i += 1
-            continue
-          }
-
           let orientation = discoveredPreview.orientations[j]
-          let testSelectorName = "\(orientation)-\(displayName)-\(j)-\(i)"
-          dynamicTestSelectors.append(testSelectorName)
-
-          let sel = NSSelectorFromString(testSelectorName)
-          let rawPtr = unsafeBitCast(dynamicTestMethod, to: UnsafeRawPointer.self)
-          let success = class_addMethod(self, sel, OpaquePointer(rawPtr), "v@:")
-          if !success {
-            print("Error adding method \(testSelectorName)")
-          }
+          testSelectorNames[previewKey(typeName: typeName, index: j)] = "\(orientation)-\(displayName)-\(j)-\(i)"
+          previews.append(DiscoveredPreviewAndIndex(preview: discoveredPreview, index: j))
           i += 1
+        }
+      }
+
+      var dynamicTestSelectors = testSelectorNames.values.sorted()
+      if let shard = snapshotShard() {
+        dynamicTestSelectors = Array(dynamicTestSelectors[shard.positions(total: dynamicTestSelectors.count)])
+      }
+
+      for testSelectorName in dynamicTestSelectors {
+        let sel = NSSelectorFromString(testSelectorName)
+        let rawPtr = unsafeBitCast(dynamicTestMethod, to: UnsafeRawPointer.self)
+        let success = class_addMethod(self, sel, OpaquePointer(rawPtr), "v@:")
+        if !success {
+          print("Error adding method \(testSelectorName)")
         }
       }
 
