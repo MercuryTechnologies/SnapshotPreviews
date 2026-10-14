@@ -70,7 +70,11 @@ final class MainRunLoopQuiescence {
     self.observer = observer
     CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
 
-    DispatchQueue.main.asyncAfter(deadline: .now() + limit, execute: finish)
+    DispatchQueue.main.asyncAfter(deadline: .now() + limit) {
+      guard !finished else { return }
+      NSLog("SnapshotPreviews: settled at the %.2fs limit before its work finished", limit)
+      finish()
+    }
   }
 }
 
