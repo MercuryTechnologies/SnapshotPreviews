@@ -20,6 +20,22 @@ final class MainRunLoopQuiescence {
   private var lastJobCount = TaskJobCounter.count
   private var quietIterations = 0
 
+  /// Set by `EMERGE_SNAPSHOT_SETTLE_ON_TASKS`.
+  static let isEnabled = ProcessInfo.processInfo.environment["EMERGE_SNAPSHOT_SETTLE_ON_TASKS"] == "1"
+
+  /// Runs the task jobs queued so far, such as loads a view model starts in its initializer, so
+  /// they finish before the first render as they would have on the global executor.
+  static func drainQueuedJobs() {
+    guard isEnabled else { return }
+    TaskJobCounter.install()
+    var quietPasses = 0
+    while quietPasses < 2 {
+      let jobCount = TaskJobCounter.count
+      CFRunLoopRunInMode(.defaultMode, 0, false)
+      quietPasses = TaskJobCounter.count == jobCount ? quietPasses + 1 : 0
+    }
+  }
+
   static func wait(quietIterations: Int, limit: TimeInterval, completion: @escaping () -> Void) {
     TaskJobCounter.install()
     let quiescence = MainRunLoopQuiescence()
