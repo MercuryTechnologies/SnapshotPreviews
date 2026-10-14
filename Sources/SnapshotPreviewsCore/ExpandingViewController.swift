@@ -29,6 +29,12 @@ public final class ExpandingViewController: UIHostingController<EmergeModifierVi
     .environment["EMERGE_SNAPSHOT_RENDER_DELAY"]
     .flatMap(Double.init) ?? 0
 
+  /// When set, settling ends as soon as the preview's Swift concurrency work has finished, and
+  /// the settle delay only caps previews that never stop working. Data loaded through any number
+  /// of awaits is then rendered however slow the machine is.
+  private let settlesOnTasks = ProcessInfo.processInfo
+    .environment["EMERGE_SNAPSHOT_SETTLE_ON_TASKS"] == "1"
+
   private var didSettle = false
   private var settleScheduled = false
   private var layout: PreviewLayout = .sizeThatFits
@@ -135,14 +141,24 @@ public final class ExpandingViewController: UIHostingController<EmergeModifierVi
     // in the meantime arrives after capture — common for the first preview in a fresh process.
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
-      DispatchQueue.main.asyncAfter(deadline: .now() + settleDelay) { [weak self] in
-        guard let self, expansionSettled != nil, !didCall else { return }
-        didSettle = true
-        setupView(layout: layout)
-        view.setNeedsLayout()
-        updateScrollViewHeight()
+      if settlesOnTasks {
+        MainRunLoopQuiescence.wait(quietIterations: 2, limit: settleDelay) { [weak self] in
+          self?.settle()
+        }
+      } else {
+        DispatchQueue.main.asyncAfter(deadline: .now() + settleDelay) { [weak self] in
+          self?.settle()
+        }
       }
     }
+  }
+
+  private func settle() {
+    guard expansionSettled != nil, !didCall else { return }
+    didSettle = true
+    setupView(layout: layout)
+    view.setNeedsLayout()
+    updateScrollViewHeight()
   }
 
 //  MARK: - Timer
