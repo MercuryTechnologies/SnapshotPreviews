@@ -130,12 +130,18 @@ public final class ExpandingViewController: UIHostingController<EmergeModifierVi
   private func scheduleSettleIfNeeded() {
     guard !settleScheduled else { return }
     settleScheduled = true
-    DispatchQueue.main.asyncAfter(deadline: .now() + settleDelay) { [weak self] in
-      guard let self, expansionSettled != nil, !didCall else { return }
-      didSettle = true
-      setupView(layout: layout)
-      view.setNeedsLayout()
-      updateScrollViewHeight()
+    // This runs during the first layout pass, so start the delay once that pass (and the first
+    // render) finishes. Otherwise a slow first render eats the delay, and data a `.task` loads
+    // in the meantime arrives after capture — common for the first preview in a fresh process.
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      DispatchQueue.main.asyncAfter(deadline: .now() + settleDelay) { [weak self] in
+        guard let self, expansionSettled != nil, !didCall else { return }
+        didSettle = true
+        setupView(layout: layout)
+        view.setNeedsLayout()
+        updateScrollViewHeight()
+      }
     }
   }
 
