@@ -323,7 +323,10 @@ open class SnapshotTest: PreviewBaseTest, PreviewFilters {
       result = snapshotResult
       expectation.fulfill()
     }
-    wait(for: [expectation], timeout: 10)
+    // Generous because some previews take seconds to render on CI, and over 10 seconds with several
+    // simulators sharing the machine. A render that times out keeps running into the next test and
+    // breaks it too.
+    wait(for: [expectation], timeout: 60)
     guard let result else {
       XCTFail("Did not render")
       return
