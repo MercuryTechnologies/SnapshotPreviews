@@ -30,6 +30,22 @@ final class AllSnapshotImageNamesTests: XCTestCase {
     XCTAssertEqual(deviceName, "iPhone 15")
   }
 
+  func testCurrentDestinationDeviceNameStripsParallelTestingClonePrefix() {
+    let deviceName = SnapshotPreviewDestination.currentDeviceName(
+      environment: ["SIMULATOR_DEVICE_NAME": "Clone 12 of iPhone 15"]
+    )
+
+    XCTAssertEqual(deviceName, "iPhone 15")
+  }
+
+  func testShardsPartitionEveryTestIndexExactlyOnce() {
+    let shards = (0..<3).map { SnapshotShard(index: $0, count: 3) }
+
+    for testIndex in 0..<20 {
+      XCTAssertEqual(shards.filter { $0.contains(testIndex: testIndex) }.count, 1)
+    }
+  }
+
   func testCurrentDestinationDeviceNameFallsBackToSimulatorModelIdentifier() {
     let deviceName = SnapshotPreviewDestination.currentDeviceName(
       environment: ["SIMULATOR_MODEL_IDENTIFIER": "iPhone16,1"]

@@ -21,10 +21,34 @@ struct DiscoveredPreviewAndIndex {
   let index: Int
 }
 
+/// One slice of the discovered previews. Xcode's parallel testing distributes work by test
+/// class, so splitting previews across several subclasses lets them run on simulator clones.
+public struct SnapshotShard {
+  public let index: Int
+  public let count: Int
+
+  public init(index: Int, count: Int) {
+    precondition(count > 0 && (0..<count).contains(index), "Invalid shard \(index) of \(count)")
+    self.index = index
+    self.count = count
+  }
+
+  func contains(testIndex: Int) -> Bool {
+    testIndex % count == index
+  }
+}
+
+// Every class rebuilds this same list during discovery and test selectors index into it, so
+// shard subclasses running in one process all resolve to the right previews.
 var previews: [DiscoveredPreviewAndIndex] = []
 
 @objc(EMGPreviewBaseTest)
 open class PreviewBaseTest: XCTestCase {
+
+  /// Returns the slice of previews this class should test, or nil to test all of them.
+  open class func snapshotShard() -> SnapshotShard? {
+    nil
+  }
 
   static var signatureCreator: NSObject?
 
@@ -73,6 +97,7 @@ open class PreviewBaseTest: XCTestCase {
       var i = 0
 
       let currentDeviceName = SnapshotPreviewDestination.currentDeviceName()
+      let shard = snapshotShard()
 
       for discoveredPreview in discoveredPreviews {
         let typeName = discoveredPreview.typeName
@@ -88,12 +113,17 @@ open class PreviewBaseTest: XCTestCase {
             continue
           }
 
+          let preview = DiscoveredPreviewAndIndex(preview: discoveredPreview, index: j)
+          previews.append(preview)
+
+          if let shard, !shard.contains(testIndex: i) {
+            i += 1
+            continue
+          }
+
           let orientation = discoveredPreview.orientations[j]
           let testSelectorName = "\(orientation)-\(displayName)-\(j)-\(i)"
           dynamicTestSelectors.append(testSelectorName)
-
-          let preview = DiscoveredPreviewAndIndex(preview: discoveredPreview, index: j)
-          previews.append(preview)
 
           let sel = NSSelectorFromString(testSelectorName)
           let rawPtr = unsafeBitCast(dynamicTestMethod, to: UnsafeRawPointer.self)
