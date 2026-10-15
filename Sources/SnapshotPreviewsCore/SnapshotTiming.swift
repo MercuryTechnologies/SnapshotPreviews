@@ -65,10 +65,18 @@ public enum SnapshotTiming {
     var renderPath: String?
     var drawHierarchySucceeded: Bool?
     var afterScreenUpdates: Bool?
-    /// Why `afterScreenUpdates` was true: the height constraint changed after `settle()`, or a
-    /// layout was pending at capture.
+    /// Why capture laid out and waited for display frames first: the height constraint changed
+    /// after `settle()`, or a layout was pending at the start of capture.
     var heightChanged: Bool?
     var needsLayout: Bool?
+    /// Which of `target`, `root`, `windowRoot` and `window` had a layout pending.
+    var needsLayoutViews: [String]?
+    /// Display frames waited after laying out, before drawing (0 or 2).
+    var captureWaitFrames: Int?
+    /// Whether a layout was pending again after that wait.
+    var needsLayoutAfterWait: Bool?
+    /// From the start of the capture block to just before `renderer.image`.
+    var captureWaitMs: Double?
     /// Whether `settle()` re-measuring changed the height constraint the settle wait rendered with.
     var settleRemeasureChangedHeight: Bool?
     var retriedWithScreenUpdates: Bool?

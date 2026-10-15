@@ -67,15 +67,24 @@ extension View {
       // time expansion settles the content is final — capture immediately.
       let delay: TimeInterval = async ? 2 : 0
       DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-        SnapshotTiming.record { $0.captureStart = SnapshotTiming.ms() }
+        let captureBlockStart = SnapshotTiming.now()
+        SnapshotTiming.record { $0.captureStart = SnapshotTiming.ms(captureBlockStart) }
         if let a11yWrapper, let accessibilityEnabled, accessibilityEnabled, !async {
           let a11yView = a11yWrapper(controller, window, layout)
-          let result = Self.takeSnapshot(layout: .sizeThatFits, renderingMode: renderingMode, window: window, rootVC: containerVC, targetView: a11yView)
+          let result = Self.takeSnapshot(layout: .sizeThatFits, renderingMode: renderingMode, window: window, rootVC: containerVC, targetView: a11yView, afterScreenUpdates: true, captureBlockStart: captureBlockStart)
           a11yView.removeFromSuperview()
           completion(SnapshotResult(image: result.mapError { $0 }, precision: precision, accessibilityEnabled: accessibilityEnabled, colorScheme: _colorScheme, appStoreSnapshot: appStoreSnapshot, tags: tags, additionalContext: additionalContext, groupOverride: groupOverride, canvasTheme: canvasTheme))
         } else {
-          let imageResult = Self.takeSnapshot(layout: layout, renderingMode: renderingMode, window: window, rootVC: containerVC, targetView: controller.view, heightChangedSinceSettle: controller.heightChangedSinceSettle)
-          completion(SnapshotResult(image: imageResult.mapError { $0 }, precision: precision, accessibilityEnabled: accessibilityEnabled, colorScheme: _colorScheme, appStoreSnapshot: appStoreSnapshot, tags: tags, additionalContext: additionalContext, groupOverride: groupOverride, canvasTheme: canvasTheme))
+          Self.prepareForCapture(
+            renderingMode: renderingMode,
+            window: window,
+            rootVC: containerVC,
+            targetView: controller.view,
+            heightChangedSinceSettle: controller.heightChangedSinceSettle)
+          {
+            let imageResult = Self.takeSnapshot(layout: layout, renderingMode: renderingMode, window: window, rootVC: containerVC, targetView: controller.view, afterScreenUpdates: false, captureBlockStart: captureBlockStart)
+            completion(SnapshotResult(image: imageResult.mapError { $0 }, precision: precision, accessibilityEnabled: accessibilityEnabled, colorScheme: _colorScheme, appStoreSnapshot: appStoreSnapshot, tags: tags, additionalContext: additionalContext, groupOverride: groupOverride, canvasTheme: canvasTheme))
+          }
         }
       }
     }
@@ -109,19 +118,65 @@ extension View {
     return windowRootVC
   }
 
+  /// Gets the screen current enough to capture with `drawHierarchy(afterScreenUpdates: false)`,
+  /// then calls `capture` once.
+  ///
+  /// The settle wait ended on quiet display frames, so the screen is normally current already. If
+  /// the height changed since `settle()` or a layout is pending, lay out now and wait two display
+  /// frames for that layout to reach the screen, rather than forcing a screen update in the draw.
+  /// Modes that never draw the hierarchy without a screen update capture right away.
+  private static func prepareForCapture(
+    renderingMode: EmergeRenderingMode?,
+    window: UIWindow,
+    rootVC: UIViewController,
+    targetView: UIView,
+    heightChangedSinceSettle: Bool,
+    capture: @escaping () -> Void)
+  {
+    let layoutViews: [(name: String, view: UIView?)] = [
+      ("target", targetView),
+      ("root", rootVC.view),
+      ("windowRoot", window.rootViewController?.view),
+      ("window", window),
+    ]
+    let needsLayoutViews = layoutViews.filter { $0.view?.layer.needsLayout() == true }.map { $0.name }
+    let needsLayout = !needsLayoutViews.isEmpty
+    let drawsScreenState = renderingMode != EmergeRenderingMode.window && renderingMode != EmergeRenderingMode.coreAnimation
+    let waitFrames = drawsScreenState && (heightChangedSinceSettle || needsLayout) ? 2 : 0
+    SnapshotTiming.record {
+      $0.heightChanged = heightChangedSinceSettle
+      $0.needsLayout = needsLayout
+      $0.needsLayoutViews = needsLayoutViews
+      $0.captureWaitFrames = waitFrames
+    }
+    guard waitFrames > 0 else {
+      capture()
+      return
+    }
+    window.layoutIfNeeded()
+    DisplayFrameWait.wait(frames: waitFrames) {
+      SnapshotTiming.record {
+        $0.needsLayoutAfterWait = layoutViews.contains { entry in entry.view?.layer.needsLayout() == true }
+      }
+      capture()
+    }
+  }
+
   private static func takeSnapshot(
     layout: PreviewLayout,
     renderingMode: EmergeRenderingMode?,
     window: UIWindow,
     rootVC: UIViewController,
     targetView: UIView,
-    heightChangedSinceSettle: Bool? = nil,
+    afterScreenUpdates: Bool,
+    captureBlockStart: Double,
     maxSize: Double = 1_000_000,
     maxTotalPixels: Double = 40_000_000) -> Result<UIImage, RenderingError>
   {
     if renderingMode == EmergeRenderingMode.window {
       let renderer = UIGraphicsImageRenderer(size: window.bounds.size)
       let renderStart = SnapshotTiming.now()
+      SnapshotTiming.record { $0.captureWaitMs = (renderStart - captureBlockStart) * 1000 }
       let screenshot = renderer.image { _ in
           window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
       }
@@ -138,18 +193,6 @@ extension View {
 
     let view = targetView
     let drawCode: (CGContext) -> Void
-
-    // The settle wait ended on quiet display frames, so the screen is normally current and forcing
-    // another screen update only costs time. Force one if the height changed since, or a layout is
-    // pending. Checked before the commit below, which would run that layout but not render it.
-    // Unknown (`nil`, e.g. a view the accessibility wrapper just added) always forces one.
-    let layoutViews: [UIView?] = [targetView, rootVC.view, window.rootViewController?.view, window]
-    let needsLayout = layoutViews.contains { $0?.layer.needsLayout() == true }
-    let afterScreenUpdates = heightChangedSinceSettle != false || needsLayout
-    SnapshotTiming.record {
-      $0.heightChanged = heightChangedSinceSettle
-      $0.needsLayout = needsLayout
-    }
 
     CATransaction.commit()
 
@@ -183,6 +226,7 @@ extension View {
     }
     let renderer = UIGraphicsImageRenderer(size: targetSize)
     let renderStart = SnapshotTiming.now()
+    SnapshotTiming.record { $0.captureWaitMs = (renderStart - captureBlockStart) * 1000 }
     let image = renderer.image { context in
       drawCode(context.cgContext)
     }
@@ -265,6 +309,49 @@ extension CALayer {
       }
     }
     return false
+  }
+}
+
+/// Calls back on the main queue after `frames` display link callbacks, or after `limit` if the
+/// display link doesn't fire, whichever comes first.
+private final class DisplayFrameWait: NSObject {
+  private var displayLink: CADisplayLink?
+  private var remainingFrames: Int
+  private var completion: (() -> Void)?
+
+  static func wait(frames: Int, limit: TimeInterval = 1, completion: @escaping () -> Void) {
+    // The display link retains the instance until it finishes.
+    let waiter = DisplayFrameWait(frames: frames, completion: completion)
+    let displayLink = CADisplayLink(target: waiter, selector: #selector(frame))
+    waiter.displayLink = displayLink
+    displayLink.add(to: .main, forMode: .common)
+
+    DispatchQueue.main.asyncAfter(deadline: .now() + limit) { [weak waiter] in
+      guard let waiter, waiter.completion != nil else { return }
+      NSLog("SnapshotPreviews: display link didn't fire %ld frames within %.2fs before capture", frames, limit)
+      waiter.finish()
+    }
+  }
+
+  private init(frames: Int, completion: @escaping () -> Void) {
+    remainingFrames = frames
+    self.completion = completion
+  }
+
+  @objc private func frame() {
+    remainingFrames -= 1
+    if remainingFrames <= 0 {
+      finish()
+    }
+  }
+
+  private func finish() {
+    displayLink?.invalidate()
+    displayLink = nil
+    guard let completion else { return }
+    self.completion = nil
+    // Finish outside the display link callout.
+    DispatchQueue.main.async(execute: completion)
   }
 }
 #endif
