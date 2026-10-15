@@ -74,7 +74,7 @@ extension View {
           a11yView.removeFromSuperview()
           completion(SnapshotResult(image: result.mapError { $0 }, precision: precision, accessibilityEnabled: accessibilityEnabled, colorScheme: _colorScheme, appStoreSnapshot: appStoreSnapshot, tags: tags, additionalContext: additionalContext, groupOverride: groupOverride, canvasTheme: canvasTheme))
         } else {
-          let imageResult = Self.takeSnapshot(layout: layout, renderingMode: renderingMode, window: window, rootVC: containerVC, targetView: controller.view)
+          let imageResult = Self.takeSnapshot(layout: layout, renderingMode: renderingMode, window: window, rootVC: containerVC, targetView: controller.view, heightChangedSinceSettle: controller.heightChangedSinceSettle)
           completion(SnapshotResult(image: imageResult.mapError { $0 }, precision: precision, accessibilityEnabled: accessibilityEnabled, colorScheme: _colorScheme, appStoreSnapshot: appStoreSnapshot, tags: tags, additionalContext: additionalContext, groupOverride: groupOverride, canvasTheme: canvasTheme))
         }
       }
@@ -115,6 +115,7 @@ extension View {
     window: UIWindow,
     rootVC: UIViewController,
     targetView: UIView,
+    heightChangedSinceSettle: Bool? = nil,
     maxSize: Double = 1_000_000,
     maxTotalPixels: Double = 40_000_000) -> Result<UIImage, RenderingError>
   {
@@ -138,6 +139,18 @@ extension View {
     let view = targetView
     let drawCode: (CGContext) -> Void
 
+    // The settle wait ended on quiet display frames, so the screen is normally current and forcing
+    // another screen update only costs time. Force one if the height changed since, or a layout is
+    // pending. Checked before the commit below, which would run that layout but not render it.
+    // Unknown (`nil`, e.g. a view the accessibility wrapper just added) always forces one.
+    let layoutViews: [UIView?] = [targetView, rootVC.view, window.rootViewController?.view, window]
+    let needsLayout = layoutViews.contains { $0?.layer.needsLayout() == true }
+    let afterScreenUpdates = heightChangedSinceSettle != false || needsLayout
+    SnapshotTiming.record {
+      $0.heightChanged = heightChangedSinceSettle
+      $0.needsLayout = needsLayout
+    }
+
     CATransaction.commit()
 
     let targetSize: CGSize
@@ -146,12 +159,12 @@ extension View {
     case .fixed(width: let width, height: let height):
       targetSize = CGSize(width: width, height: height)
       drawCode = { ctx in
-        success = view.render(size: targetSize, mode: renderingMode, context: ctx)
+        success = view.render(size: targetSize, mode: renderingMode, context: ctx, afterScreenUpdates: afterScreenUpdates)
       }
     case .sizeThatFits:
       targetSize = view.bounds.size
       drawCode = { ctx in
-        success = view.render(size: targetSize, mode: renderingMode, context: ctx)
+        success = view.render(size: targetSize, mode: renderingMode, context: ctx, afterScreenUpdates: afterScreenUpdates)
       }
     case .device:
       fallthrough
@@ -160,7 +173,7 @@ extension View {
 
       targetSize = CGSize(width: UIScreen.main.bounds.size.width, height: max(viewSize.height, UIScreen.main.bounds.size.height))
       drawCode = { ctx in
-        success = rootVC.view.render(size: targetSize, mode: renderingMode, context: ctx)
+        success = rootVC.view.render(size: targetSize, mode: renderingMode, context: ctx, afterScreenUpdates: afterScreenUpdates)
       }
     }
     let scale = Double(UIScreen.main.scale)
@@ -194,29 +207,41 @@ extension CGSize {
 }
 
 extension UIView {
-  func render(size: CGSize, mode: EmergeRenderingMode?, context: CGContext) -> Bool {
+  func render(size: CGSize, mode: EmergeRenderingMode?, context: CGContext, afterScreenUpdates: Bool = true) -> Bool {
     switch mode {
     case .coreAnimation:
       SnapshotTiming.record { $0.renderPath = "layer.render" }
       layer.layerForSnapshot.render(in: context)
       return true
     case .uiView:
-      SnapshotTiming.record { $0.renderPath = "drawHierarchy" }
-      let drew = drawHierarchy(in: CGRect(origin: .zero, size: size), afterScreenUpdates: true)
-      SnapshotTiming.record { $0.drawHierarchySucceeded = drew }
-      return drew
+      return drawHierarchyForSnapshot(size: size, context: context, afterScreenUpdates: afterScreenUpdates)
     case .window, .none:
       if !size.requiresCoreAnimationSnapshot {
-        SnapshotTiming.record { $0.renderPath = "drawHierarchy" }
-        let drew = drawHierarchy(in: CGRect(origin: .zero, size: size), afterScreenUpdates: true)
-        SnapshotTiming.record { $0.drawHierarchySucceeded = drew }
-        return drew
+        return drawHierarchyForSnapshot(size: size, context: context, afterScreenUpdates: afterScreenUpdates)
       } else {
         SnapshotTiming.record { $0.renderPath = "layer.render" }
         layer.layerForSnapshot.render(in: context)
         return true
       }
     }
+  }
+
+  private func drawHierarchyForSnapshot(size: CGSize, context: CGContext, afterScreenUpdates: Bool) -> Bool {
+    SnapshotTiming.record {
+      $0.renderPath = "drawHierarchy"
+      $0.afterScreenUpdates = afterScreenUpdates
+    }
+    let rect = CGRect(origin: .zero, size: size)
+    var drew = drawHierarchy(in: rect, afterScreenUpdates: afterScreenUpdates)
+    if !drew && !afterScreenUpdates {
+      // The draw without a screen update failed. Clear anything it drew and retry with one, so a
+      // failure never becomes a blank or partial image.
+      context.clear(rect)
+      drew = drawHierarchy(in: rect, afterScreenUpdates: true)
+      SnapshotTiming.record { $0.retriedWithScreenUpdates = true }
+    }
+    SnapshotTiming.record { $0.drawHierarchySucceeded = drew }
+    return drew
   }
 }
 

@@ -37,6 +37,13 @@ public enum SnapshotTiming {
     var previewName: String?
     var previewIndex: Int
 
+    /// `TaskJobCounter.count` at the end of the previous shot in this process, at the start of this
+    /// one (after XCTest's `setUp`), and around this shot's drain.
+    var jobsAtPreviousTestEnd: Int?
+    var jobsAtTestStart: Int?
+    var jobsAtDrainStart: Int?
+    var jobsAtDrainEnd: Int?
+
     var performRenderStart: Double?
     var previewViewEnd: Double?
     var drainEnd: Double?
@@ -57,6 +64,14 @@ public enum SnapshotTiming {
     var renderImageMs: Double?
     var renderPath: String?
     var drawHierarchySucceeded: Bool?
+    var afterScreenUpdates: Bool?
+    /// Why `afterScreenUpdates` was true: the height constraint changed after `settle()`, or a
+    /// layout was pending at capture.
+    var heightChanged: Bool?
+    var needsLayout: Bool?
+    /// Whether `settle()` re-measuring changed the height constraint the settle wait rendered with.
+    var settleRemeasureChangedHeight: Bool?
+    var retriedWithScreenUpdates: Bool?
     var imageSize: [Double]?
     var completion: Double?
     var testPreviewEnd: Double?
@@ -92,6 +107,7 @@ public enum SnapshotTiming {
   private static var wroteProcessLine = false
   private static var start: Double = 0
   private static var current: Shot?
+  private static var previousTestEndJobs: Int?
 
   static func now() -> Double {
     #if canImport(QuartzCore)
@@ -110,6 +126,14 @@ public enum SnapshotTiming {
     ms(now())
   }
 
+  private static var taskJobCount: Int? {
+    #if canImport(UIKit) && !os(visionOS) && !os(watchOS) && !os(tvOS)
+    return TaskJobCounter.count
+    #else
+    return nil
+    #endif
+  }
+
   static func record(_ update: (inout Shot) -> Void) {
     guard current != nil else { return }
     update(&current!)
@@ -119,8 +143,17 @@ public enum SnapshotTiming {
   public static func beginShot(testName: String, typeName: String, previewName: String?, previewIndex: Int) {
     guard fileDescriptor != nil else { return }
     writeProcessLineIfNeeded()
+    #if canImport(UIKit) && !os(visionOS) && !os(watchOS) && !os(tvOS)
+    // Count jobs from the first shot on, not just from its drain. Only when settling on tasks, since
+    // installing also moves global executor jobs to the main thread.
+    if MainRunLoopQuiescence.isEnabled {
+      TaskJobCounter.install()
+    }
+    #endif
     start = now()
     current = Shot(testName: testName, typeName: typeName, previewName: previewName, previewIndex: previewIndex)
+    current?.jobsAtPreviousTestEnd = previousTestEndJobs
+    current?.jobsAtTestStart = taskJobCount
   }
 
   public static func recordCompletion() {
@@ -130,6 +163,7 @@ public enum SnapshotTiming {
   public static func endShot() {
     guard var shot = current else { return }
     shot.testPreviewEnd = ms()
+    previousTestEndJobs = taskJobCount
     current = nil
     write(shot)
   }

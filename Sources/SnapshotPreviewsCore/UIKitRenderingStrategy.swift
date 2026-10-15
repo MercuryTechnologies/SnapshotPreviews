@@ -104,7 +104,10 @@ public class UIKitRenderingStrategy: RenderingStrategy {
       controller: controller,
       window: window,
       async: false,
-      a11yWrapper: a11yWrapper) { result in
+      a11yWrapper: a11yWrapper) { [window] result in
+        // Take the preview out of the window once it's captured. Left installed, it reacts to the
+        // next test's setUp resetting global state, and that work runs in the next preview's drain.
+        window.rootViewController = nil
         completion(result)
       }
   }

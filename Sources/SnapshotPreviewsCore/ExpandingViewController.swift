@@ -39,6 +39,16 @@ public final class ExpandingViewController: UIHostingController<EmergeModifierVi
   var heightAnchor: NSLayoutConstraint?
   private var widthAnchor: NSLayoutConstraint?
 
+  /// The height constraint's constant as `settle()` left it.
+  private var heightAtSettle: CGFloat?
+
+  /// Whether an expansion pass changed the height after `settle()`, so what's on screen may be
+  /// out of date. True when the view never settled, since nothing is known then.
+  var heightChangedSinceSettle: Bool {
+    guard let heightAtSettle, let heightAnchor else { return true }
+    return heightAnchor.constant != heightAtSettle
+  }
+
   private var startTime: UInt64?
   private var timer: Timer?
 
@@ -47,6 +57,7 @@ public final class ExpandingViewController: UIHostingController<EmergeModifierVi
       didCall = false
       didSettle = settleDelay <= 0
       settleScheduled = false
+      heightAtSettle = nil
     }
   }
 
@@ -167,7 +178,10 @@ public final class ExpandingViewController: UIHostingController<EmergeModifierVi
     guard expansionSettled != nil, !didCall else { return }
     SnapshotTiming.record { $0.settleEnd = SnapshotTiming.ms() }
     didSettle = true
+    let heightBeforeSettle = heightAnchor?.constant
     setupView(layout: layout)
+    heightAtSettle = heightAnchor?.constant
+    SnapshotTiming.record { $0.settleRemeasureChangedHeight = heightAtSettle != heightBeforeSettle }
     view.setNeedsLayout()
     updateScrollViewHeight()
   }

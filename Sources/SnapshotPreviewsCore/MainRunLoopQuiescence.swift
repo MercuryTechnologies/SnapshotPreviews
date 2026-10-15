@@ -32,6 +32,7 @@ final class MainRunLoopQuiescence: NSObject {
   static func drainQueuedJobs() {
     guard isEnabled else { return }
     TaskJobCounter.install()
+    SnapshotTiming.record { $0.jobsAtDrainStart = TaskJobCounter.count }
     var quietPasses = 0
     var passes = 0
     while quietPasses < 2 {
@@ -40,7 +41,10 @@ final class MainRunLoopQuiescence: NSObject {
       passes += 1
       quietPasses = TaskJobCounter.count == jobCount ? quietPasses + 1 : 0
     }
-    SnapshotTiming.record { $0.drainPasses = passes }
+    SnapshotTiming.record {
+      $0.drainPasses = passes
+      $0.jobsAtDrainEnd = TaskJobCounter.count
+    }
   }
 
   static func wait(quietFrames: Int, limit: TimeInterval, completion: @escaping () -> Void) {
