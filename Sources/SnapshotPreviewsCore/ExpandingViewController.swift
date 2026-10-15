@@ -139,7 +139,7 @@ public final class ExpandingViewController: UIHostingController<EmergeModifierVi
       // and the settle delay only caps previews that never stop working. Data loaded through any
       // number of awaits is then rendered however slow the machine is.
       if MainRunLoopQuiescence.isEnabled {
-        MainRunLoopQuiescence.wait(quietIterations: 2, limit: settleDelay) { [weak self] in
+        MainRunLoopQuiescence.wait(quietFrames: 2, limit: settleDelay) { [weak self] in
           self?.settle()
         }
       } else {

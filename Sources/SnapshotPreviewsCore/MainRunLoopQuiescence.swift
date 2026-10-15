@@ -6,19 +6,23 @@
 //
 
 import Foundation
+#if canImport(UIKit) && !os(visionOS) && !os(watchOS) && !os(tvOS)
+import UIKit
 
-/// Calls back once the preview's Swift concurrency work has finished: the main run loop has gone
-/// to sleep `quietIterations` times in a row without running a task job in between. Gives up after
-/// `limit`, for previews that never stop working.
+/// Calls back once the preview's Swift concurrency work has finished and what it changed is on
+/// screen: `quietFrames` display frames in a row have gone by without running a task job. Gives
+/// up after `limit`, for previews that never stop working.
 ///
-/// Every task job is moved to the main executor (see `TaskJobCounter`), so when the main run loop
-/// is about to sleep with no jobs since the last time, no task can be running elsewhere. The
-/// observer runs after SwiftUI's update and Core Animation's commit, so any state a job changed
-/// has been rendered, and any `.task` that rendering started has been counted.
-final class MainRunLoopQuiescence {
-  private var observer: CFRunLoopObserver?
+/// Every task job is moved to the main executor (see `TaskJobCounter`), so no task can be running
+/// elsewhere unseen. Counting frames rather than run loop turns matters because UIKit and SwiftUI
+/// apply state changes once per frame: an `@Published` value set in `onAppear` only shows up in
+/// the next frame's update, which also starts any `.task` the new content adds.
+final class MainRunLoopQuiescence: NSObject {
+  private var displayLink: CADisplayLink?
   private var lastJobCount = TaskJobCounter.count
-  private var quietIterations = 0
+  private var quietFrames = 0
+  private let requiredQuietFrames: Int
+  private var completion: (() -> Void)?
 
   /// Set by `EMERGE_SNAPSHOT_SETTLE_ON_TASKS`.
   static let isEnabled = ProcessInfo.processInfo.environment["EMERGE_SNAPSHOT_SETTLE_ON_TASKS"] == "1"
@@ -36,45 +40,42 @@ final class MainRunLoopQuiescence {
     }
   }
 
-  static func wait(quietIterations: Int, limit: TimeInterval, completion: @escaping () -> Void) {
+  static func wait(quietFrames: Int, limit: TimeInterval, completion: @escaping () -> Void) {
     TaskJobCounter.install()
-    let quiescence = MainRunLoopQuiescence()
-    quiescence.start(quietIterations: quietIterations, limit: limit) {
-      // Keep the instance alive until it finishes.
-      _ = quiescence
-      completion()
+    // The display link retains the instance until it finishes.
+    let quiescence = MainRunLoopQuiescence(quietFrames: quietFrames, completion: completion)
+    let displayLink = CADisplayLink(target: quiescence, selector: #selector(frame))
+    quiescence.displayLink = displayLink
+    displayLink.add(to: .main, forMode: .common)
+
+    DispatchQueue.main.asyncAfter(deadline: .now() + limit) { [weak quiescence] in
+      guard let quiescence, quiescence.completion != nil else { return }
+      NSLog("SnapshotPreviews: settled at the %.2fs limit before its work finished", limit)
+      quiescence.finish()
     }
   }
 
-  private func start(quietIterations required: Int, limit: TimeInterval, completion: @escaping () -> Void) {
-    var finished = false
-    let finish = { [weak self] in
-      guard !finished else { return }
-      finished = true
-      if let observer = self?.observer {
-        CFRunLoopRemoveObserver(CFRunLoopGetMain(), observer, .commonModes)
-      }
-      completion()
-    }
+  private init(quietFrames: Int, completion: @escaping () -> Void) {
+    requiredQuietFrames = quietFrames
+    self.completion = completion
+  }
 
-    let observer = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue, true, CFIndex.max) { [weak self] _, _ in
-      guard let self else { return }
-      let jobCount = TaskJobCounter.count
-      quietIterations = jobCount == lastJobCount ? quietIterations + 1 : 0
-      lastJobCount = jobCount
-      if quietIterations >= required {
-        // Finish outside the observer callout.
-        DispatchQueue.main.async(execute: finish)
-      }
-    }
-    self.observer = observer
-    CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
-
-    DispatchQueue.main.asyncAfter(deadline: .now() + limit) {
-      guard !finished else { return }
-      NSLog("SnapshotPreviews: settled at the %.2fs limit before its work finished", limit)
+  @objc private func frame() {
+    let jobCount = TaskJobCounter.count
+    quietFrames = jobCount == lastJobCount ? quietFrames + 1 : 0
+    lastJobCount = jobCount
+    if quietFrames >= requiredQuietFrames {
       finish()
     }
+  }
+
+  private func finish() {
+    displayLink?.invalidate()
+    displayLink = nil
+    guard let completion else { return }
+    self.completion = nil
+    // Finish outside the display link callout.
+    DispatchQueue.main.async(execute: completion)
   }
 }
 
@@ -122,3 +123,4 @@ private func countAndEnqueue(_ job: UnownedJob, _ original: TaskJobCounter.Origi
   TaskJobCounter.increment()
   original(job)
 }
+#endif
