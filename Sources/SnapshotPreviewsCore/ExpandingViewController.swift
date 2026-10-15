@@ -94,6 +94,12 @@ public final class ExpandingViewController: UIHostingController<EmergeModifierVi
     guard !didCall else { return }
 
     didCall = true
+    if expansionSettled != nil {
+      SnapshotTiming.record {
+        $0.runCallback = SnapshotTiming.ms()
+        $0.runCallbackError = error != nil
+      }
+    }
     expansionSettled?(rootView.emergeRenderingMode, rootView.precision, rootView.accessibilityEnabled, rootView.appStoreSnapshot, rootView.tags, rootView.additionalContext, rootView.groupOverride, rootView.canvasTheme, error)
     stopAndResetTimer()
   }
@@ -118,10 +124,16 @@ public final class ExpandingViewController: UIHostingController<EmergeModifierVi
     // the fitting size reflects the hydrated content, then let expansion run to
     // completion and capture immediately on settle.
     guard didSettle else {
+      if !didCall {
+        SnapshotTiming.record { $0.layoutPassesBeforeSettle += 1 }
+      }
       scheduleSettleIfNeeded()
       return
     }
 
+    if !didCall {
+      SnapshotTiming.record { $0.heightPasses.append(SnapshotTiming.ms()) }
+    }
     updateHeight {
       runCallback()
     }
@@ -135,6 +147,7 @@ public final class ExpandingViewController: UIHostingController<EmergeModifierVi
     // in the meantime arrives after capture — common for the first preview in a fresh process.
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
+      SnapshotTiming.record { $0.settleWaitStart = SnapshotTiming.ms() }
       // When enabled, settling ends as soon as the preview's Swift concurrency work has finished,
       // and the settle delay only caps previews that never stop working. Data loaded through any
       // number of awaits is then rendered however slow the machine is.
@@ -152,6 +165,7 @@ public final class ExpandingViewController: UIHostingController<EmergeModifierVi
 
   private func settle() {
     guard expansionSettled != nil, !didCall else { return }
+    SnapshotTiming.record { $0.settleEnd = SnapshotTiming.ms() }
     didSettle = true
     setupView(layout: layout)
     view.setNeedsLayout()

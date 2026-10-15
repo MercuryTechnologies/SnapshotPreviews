@@ -91,10 +91,14 @@ public class UIKitRenderingStrategy: RenderingStrategy {
     preview: SnapshotPreviewsCore.Preview,
     completion: @escaping (SnapshotResult) -> Void
   ) {
+    SnapshotTiming.record { $0.performRenderStart = SnapshotTiming.ms() }
     UIView.setAnimationsEnabled(false)
     let view = preview.view()
+    SnapshotTiming.record { $0.previewViewEnd = SnapshotTiming.ms() }
     MainRunLoopQuiescence.drainQueuedJobs()
+    SnapshotTiming.record { $0.drainEnd = SnapshotTiming.ms() }
     let controller = view.makeExpandingView(layout: preview.layout, window: window)
+    SnapshotTiming.record { $0.makeExpandingViewEnd = SnapshotTiming.ms() }
     view.snapshot(
       layout: preview.layout,
       controller: controller,

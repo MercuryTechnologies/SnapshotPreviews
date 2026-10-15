@@ -67,6 +67,7 @@ extension View {
       // time expansion settles the content is final — capture immediately.
       let delay: TimeInterval = async ? 2 : 0
       DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+        SnapshotTiming.record { $0.captureStart = SnapshotTiming.ms() }
         if let a11yWrapper, let accessibilityEnabled, accessibilityEnabled, !async {
           let a11yView = a11yWrapper(controller, window, layout)
           let result = Self.takeSnapshot(layout: .sizeThatFits, renderingMode: renderingMode, window: window, rootVC: containerVC, targetView: a11yView)
@@ -119,8 +120,17 @@ extension View {
   {
     if renderingMode == EmergeRenderingMode.window {
       let renderer = UIGraphicsImageRenderer(size: window.bounds.size)
+      let renderStart = SnapshotTiming.now()
       let screenshot = renderer.image { _ in
           window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+      }
+      let renderEnd = SnapshotTiming.now()
+      SnapshotTiming.record {
+        $0.renderImageStart = SnapshotTiming.ms(renderStart)
+        $0.renderImageEnd = SnapshotTiming.ms(renderEnd)
+        $0.renderImageMs = (renderEnd - renderStart) * 1000
+        $0.renderPath = "window.drawHierarchy"
+        $0.imageSize = [Double(window.bounds.width), Double(window.bounds.height)]
       }
       return .success(screenshot)
     }
@@ -159,8 +169,16 @@ extension View {
       return .failure(RenderingError.maxSize(targetSize))
     }
     let renderer = UIGraphicsImageRenderer(size: targetSize)
+    let renderStart = SnapshotTiming.now()
     let image = renderer.image { context in
       drawCode(context.cgContext)
+    }
+    let renderEnd = SnapshotTiming.now()
+    SnapshotTiming.record {
+      $0.renderImageStart = SnapshotTiming.ms(renderStart)
+      $0.renderImageEnd = SnapshotTiming.ms(renderEnd)
+      $0.renderImageMs = (renderEnd - renderStart) * 1000
+      $0.imageSize = [Double(targetSize.width), Double(targetSize.height)]
     }
     if !success {
       return .failure(RenderingError.failedRendering(targetSize))
@@ -179,14 +197,22 @@ extension UIView {
   func render(size: CGSize, mode: EmergeRenderingMode?, context: CGContext) -> Bool {
     switch mode {
     case .coreAnimation:
+      SnapshotTiming.record { $0.renderPath = "layer.render" }
       layer.layerForSnapshot.render(in: context)
       return true
     case .uiView:
-      return drawHierarchy(in: CGRect(origin: .zero, size: size), afterScreenUpdates: true)
+      SnapshotTiming.record { $0.renderPath = "drawHierarchy" }
+      let drew = drawHierarchy(in: CGRect(origin: .zero, size: size), afterScreenUpdates: true)
+      SnapshotTiming.record { $0.drawHierarchySucceeded = drew }
+      return drew
     case .window, .none:
       if !size.requiresCoreAnimationSnapshot {
-        return drawHierarchy(in: CGRect(origin: .zero, size: size), afterScreenUpdates: true)
+        SnapshotTiming.record { $0.renderPath = "drawHierarchy" }
+        let drew = drawHierarchy(in: CGRect(origin: .zero, size: size), afterScreenUpdates: true)
+        SnapshotTiming.record { $0.drawHierarchySucceeded = drew }
+        return drew
       } else {
+        SnapshotTiming.record { $0.renderPath = "layer.render" }
         layer.layerForSnapshot.render(in: context)
         return true
       }

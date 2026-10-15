@@ -303,6 +303,12 @@ open class SnapshotTest: PreviewBaseTest, PreviewFilters {
     }
 
     let preview = previewType.previews[discoveredPreview.index]
+    SnapshotTiming.beginShot(
+      testName: name,
+      typeName: previewType.typeName,
+      previewName: preview.displayName,
+      previewIndex: discoveredPreview.index)
+    defer { SnapshotTiming.endShot() }
 
     // Lazily create the rendering strategy
     let strategy: RenderingStrategy
@@ -320,6 +326,7 @@ open class SnapshotTest: PreviewBaseTest, PreviewFilters {
     var result: SnapshotResult? = nil
     let expectation = XCTestExpectation()
     strategy.render(preview: preview) { snapshotResult in
+      SnapshotTiming.recordCompletion()
       result = snapshotResult
       expectation.fulfill()
     }

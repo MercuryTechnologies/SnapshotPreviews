@@ -33,11 +33,14 @@ final class MainRunLoopQuiescence: NSObject {
     guard isEnabled else { return }
     TaskJobCounter.install()
     var quietPasses = 0
+    var passes = 0
     while quietPasses < 2 {
       let jobCount = TaskJobCounter.count
       CFRunLoopRunInMode(.defaultMode, 0, false)
+      passes += 1
       quietPasses = TaskJobCounter.count == jobCount ? quietPasses + 1 : 0
     }
+    SnapshotTiming.record { $0.drainPasses = passes }
   }
 
   static func wait(quietFrames: Int, limit: TimeInterval, completion: @escaping () -> Void) {
@@ -50,6 +53,7 @@ final class MainRunLoopQuiescence: NSObject {
 
     DispatchQueue.main.asyncAfter(deadline: .now() + limit) { [weak quiescence] in
       guard let quiescence, quiescence.completion != nil else { return }
+      SnapshotTiming.record { $0.settleHitLimit = true }
       NSLog("SnapshotPreviews: settled at the %.2fs limit before its work finished", limit)
       quiescence.finish()
     }
@@ -62,6 +66,18 @@ final class MainRunLoopQuiescence: NSObject {
 
   @objc private func frame() {
     let jobCount = TaskJobCounter.count
+    if let displayLink {
+      let time = SnapshotTiming.now()
+      let jobsChanged = jobCount != lastJobCount
+      SnapshotTiming.record {
+        $0.settleFrames.append(SnapshotTiming.Frame(
+          t: SnapshotTiming.ms(time),
+          timestamp: SnapshotTiming.ms(displayLink.timestamp),
+          targetTimestamp: SnapshotTiming.ms(displayLink.targetTimestamp),
+          duration: displayLink.duration * 1000,
+          jobsChanged: jobsChanged))
+      }
+    }
     quietFrames = jobCount == lastJobCount ? quietFrames + 1 : 0
     lastJobCount = jobCount
     if quietFrames >= requiredQuietFrames {
@@ -73,6 +89,12 @@ final class MainRunLoopQuiescence: NSObject {
     displayLink?.invalidate()
     displayLink = nil
     guard let completion else { return }
+    SnapshotTiming.record {
+      $0.settleFinish = SnapshotTiming.ms()
+      if $0.settleHitLimit == nil {
+        $0.settleHitLimit = false
+      }
+    }
     self.completion = nil
     // Finish outside the display link callout.
     DispatchQueue.main.async(execute: completion)
