@@ -21,10 +21,35 @@ struct DiscoveredPreviewAndIndex {
   let index: Int
 }
 
+/// One slice of the discovered previews, for running them across several processes or machines.
+/// Each shard takes a contiguous run of the tests in execution order.
+public struct SnapshotShard {
+  public let index: Int
+  public let count: Int
+
+  public init(index: Int, count: Int) {
+    precondition(count > 0 && (0..<count).contains(index), "Invalid shard \(index) of \(count)")
+    self.index = index
+    self.count = count
+  }
+
+  /// Positions this shard covers among `total` tests sorted in execution order.
+  func positions(total: Int) -> Range<Int> {
+    (total * index / count)..<(total * (index + 1) / count)
+  }
+}
+
+// Every class rebuilds this same list during discovery and test selectors index into it, so
+// shard subclasses running in one process all resolve to the right previews.
 var previews: [DiscoveredPreviewAndIndex] = []
 
 @objc(EMGPreviewBaseTest)
 open class PreviewBaseTest: XCTestCase {
+
+  /// Returns the slice of previews this class should test, or nil to test all of them.
+  open class func snapshotShard() -> SnapshotShard? {
+    nil
+  }
 
   static var signatureCreator: NSObject?
 
@@ -67,9 +92,9 @@ open class PreviewBaseTest: XCTestCase {
 
     @MainActor
     class func addMethods() -> [String] {
-      var dynamicTestSelectors: [String] = []
       let discoveredPreviews = discoverPreviews()
       previews = []
+      var testSelectorNames: [String] = []
       var i = 0
 
       let currentDeviceName = SnapshotPreviewDestination.currentDeviceName()
@@ -89,19 +114,23 @@ open class PreviewBaseTest: XCTestCase {
           }
 
           let orientation = discoveredPreview.orientations[j]
-          let testSelectorName = "\(orientation)-\(displayName)-\(j)-\(i)"
-          dynamicTestSelectors.append(testSelectorName)
-
-          let preview = DiscoveredPreviewAndIndex(preview: discoveredPreview, index: j)
-          previews.append(preview)
-
-          let sel = NSSelectorFromString(testSelectorName)
-          let rawPtr = unsafeBitCast(dynamicTestMethod, to: UnsafeRawPointer.self)
-          let success = class_addMethod(self, sel, OpaquePointer(rawPtr), "v@:")
-          if !success {
-            print("Error adding method \(testSelectorName)")
-          }
+          testSelectorNames.append("\(orientation)-\(displayName)-\(j)-\(i)")
+          previews.append(DiscoveredPreviewAndIndex(preview: discoveredPreview, index: j))
           i += 1
+        }
+      }
+
+      var dynamicTestSelectors = testSelectorNames.sorted()
+      if let shard = snapshotShard() {
+        dynamicTestSelectors = Array(dynamicTestSelectors[shard.positions(total: dynamicTestSelectors.count)])
+      }
+
+      for testSelectorName in dynamicTestSelectors {
+        let sel = NSSelectorFromString(testSelectorName)
+        let rawPtr = unsafeBitCast(dynamicTestMethod, to: UnsafeRawPointer.self)
+        let success = class_addMethod(self, sel, OpaquePointer(rawPtr), "v@:")
+        if !success {
+          print("Error adding method \(testSelectorName)")
         }
       }
 

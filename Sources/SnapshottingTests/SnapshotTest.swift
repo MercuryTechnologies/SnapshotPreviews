@@ -231,7 +231,10 @@ open class SnapshotTest: PreviewBaseTest, PreviewFilters {
   override class func discoverPreviews() -> [DiscoveredPreview] {
     allSnapshotImageNamesWriter = AllSnapshotImageNamesWriter.createFromEnvironment()
     if allSnapshotImageNamesWriter == nil {
-      ciExportCoordinator = SnapshotCIExportCoordinator.createFromEnvironment()
+      // Shard subclasses each run discovery; reuse one coordinator so it registers and drains once.
+      if ciExportCoordinator == nil {
+        ciExportCoordinator = SnapshotCIExportCoordinator.createFromEnvironment()
+      }
     } else {
       ciExportCoordinator = nil
     }
@@ -320,7 +323,10 @@ open class SnapshotTest: PreviewBaseTest, PreviewFilters {
       result = snapshotResult
       expectation.fulfill()
     }
-    wait(for: [expectation], timeout: 10)
+    // Generous because some previews take seconds to render on CI, and over 10 seconds with several
+    // simulators sharing the machine. A render that times out keeps running into the next test and
+    // breaks it too.
+    wait(for: [expectation], timeout: 60)
     guard let result else {
       XCTFail("Did not render")
       return
@@ -347,7 +353,7 @@ open class SnapshotTest: PreviewBaseTest, PreviewFilters {
         previewDisplayName: preview.displayName,
         previewIndex: discoveredPreview.index,
         orientation: preview.orientation.id,
-        simulatorDeviceName: ProcessInfo.processInfo.environment["SIMULATOR_DEVICE_NAME"],
+        simulatorDeviceName: SnapshotPreviewDestination.simulatorDeviceName(),
         simulatorModelIdentifier: ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"],
         diffThreshold: SnapshotCIExportCoordinator.diffThreshold(for: result.precision),
         accessibilityEnabled: result.accessibilityEnabled,

@@ -93,6 +93,7 @@ public class UIKitRenderingStrategy: RenderingStrategy {
   ) {
     UIView.setAnimationsEnabled(false)
     let view = preview.view()
+    MainRunLoopQuiescence.drainQueuedJobs()
     let controller = view.makeExpandingView(layout: preview.layout, window: window)
     view.snapshot(
       layout: preview.layout,
