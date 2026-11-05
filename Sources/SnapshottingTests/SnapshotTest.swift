@@ -50,6 +50,7 @@ open class SnapshotTest: PreviewBaseTest, PreviewFilters {
     }
 
     private let rawBaseFileNameByKey: [FileNameKey: String]
+    private let displayNameByKey: [FileNameKey: String]
 
     init(previews: [SnapshotPreviewsCore.PreviewType]) {
       let metas = previews.map { previewType in
@@ -60,12 +61,15 @@ open class SnapshotTest: PreviewBaseTest, PreviewFilters {
         )
       }
 
+      let displayNameByKey = Self.displayNames(for: metas)
+
       // First pass: count previews sharing each (group, displayName) to detect
       // duplicates that need disambiguation.
       var displayNameCountByGroup: [PreviewGroup: [PreviewDisplayName: Int]] = [:]
       for meta in metas {
-        for preview in meta.previewType.previews {
-          guard let displayName = preview.displayName, !displayName.isEmpty else { continue }
+        for previewIndex in meta.previewType.previews.indices {
+          let key = FileNameKey(typeName: meta.previewType.typeName, previewIndex: previewIndex)
+          guard let displayName = displayNameByKey[key] else { continue }
           displayNameCountByGroup[meta.group, default: [:]][displayName, default: 0] += 1
         }
       }
@@ -78,11 +82,13 @@ open class SnapshotTest: PreviewBaseTest, PreviewFilters {
       for meta in metas {
         let displayNameCounts = displayNameCountByGroup[meta.group] ?? [:]
 
-        for (previewIndex, preview) in meta.previewType.previews.enumerated() {
-          let occurrenceCount = preview.displayName.flatMap { displayNameCounts[$0] } ?? 0
+        for previewIndex in meta.previewType.previews.indices {
+          let key = FileNameKey(typeName: meta.previewType.typeName, previewIndex: previewIndex)
+          let displayName = displayNameByKey[key]
+          let occurrenceCount = displayName.flatMap { displayNameCounts[$0] } ?? 0
 
           var ordinal: Int?
-          if let displayName = preview.displayName, occurrenceCount > 1 {
+          if let displayName, occurrenceCount > 1 {
             let ordinalKey = DuplicateKey(group: meta.group, displayName: displayName)
             let next = nextOrdinalByKey[ordinalKey, default: 1]
             nextOrdinalByKey[ordinalKey] = next + 1
@@ -90,7 +96,7 @@ open class SnapshotTest: PreviewBaseTest, PreviewFilters {
           }
 
           let component = Self.fileNameComponent(
-            previewDisplayName: preview.displayName,
+            previewDisplayName: displayName,
             previewIndex: previewIndex,
             fileId: meta.previewType.fileID,
             line: meta.previewType.line,
@@ -98,12 +104,44 @@ open class SnapshotTest: PreviewBaseTest, PreviewFilters {
             duplicateDisplayNameOrdinal: ordinal
           )
 
-          let key = FileNameKey(typeName: meta.previewType.typeName, previewIndex: previewIndex)
           rawBaseFileNameByKey[key] = "\(meta.prefix)_\(component)"
         }
       }
 
       self.rawBaseFileNameByKey = rawBaseFileNameByKey
+      self.displayNameByKey = displayNameByKey
+    }
+
+    /// Display names for every preview, naming unnamed `#Preview` macros by their order in the file
+    /// ("Preview", "Preview 2", …) instead of their source line, so editing code above a preview
+    /// doesn't turn its snapshot into a removal plus an addition.
+    private static func displayNames(for metas: [PreviewMeta]) -> [FileNameKey: String] {
+      var displayNameByKey: [FileNameKey: String] = [:]
+      var unnamedMacrosByGroup: [PreviewGroup: [(line: Int, key: FileNameKey)]] = [:]
+
+      for meta in metas {
+        for (previewIndex, preview) in meta.previewType.previews.enumerated() {
+          let key = FileNameKey(typeName: meta.previewType.typeName, previewIndex: previewIndex)
+          if let displayName = preview.displayName, !displayName.isEmpty {
+            displayNameByKey[key] = displayName
+          } else if meta.previewType.fileID != nil, let line = meta.previewType.line {
+            unnamedMacrosByGroup[meta.group, default: []].append((line, key))
+          }
+        }
+      }
+
+      for unnamedMacros in unnamedMacrosByGroup.values {
+        let sorted = unnamedMacros.sorted { ($0.line, $0.key.previewIndex) < ($1.line, $1.key.previewIndex) }
+        for (offset, macro) in sorted.enumerated() {
+          displayNameByKey[macro.key] = offset == 0 ? "Preview" : "Preview \(offset + 1)"
+        }
+      }
+
+      return displayNameByKey
+    }
+
+    func displayName(typeName: String, previewIndex: Int) -> String? {
+      displayNameByKey[FileNameKey(typeName: typeName, previewIndex: previewIndex)]
     }
 
     func rawBaseFileName(typeName: String, previewIndex: Int) -> String? {
@@ -350,7 +388,10 @@ open class SnapshotTest: PreviewBaseTest, PreviewFilters {
         typeDisplayName: previewType.displayName,
         fileId: previewType.fileID,
         line: previewType.line,
-        previewDisplayName: preview.displayName,
+        previewDisplayName: Self.fileNameResolver.displayName(
+          typeName: previewType.typeName,
+          previewIndex: discoveredPreview.index
+        ),
         previewIndex: discoveredPreview.index,
         orientation: preview.orientation.id,
         simulatorDeviceName: SnapshotPreviewDestination.simulatorDeviceName(),

@@ -98,6 +98,14 @@ public struct PreviewType: Hashable, Identifiable {
     self.platform = A.platform
   }
 
+  init(typeName: String, fileID: String?, line: Int?, previews: [Preview]) {
+    self.typeName = typeName
+    self.fileID = fileID
+    self.line = line
+    self.previews = previews
+    self.platform = nil
+  }
+
 #if compiler(>=5.9)
   @available(iOS 17.0, macOS 14.0, watchOS 10.0, tvOS 17.0, *)
   @MainActor

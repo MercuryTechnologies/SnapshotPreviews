@@ -178,3 +178,56 @@ private struct AllSnapshotImageNamesTestProvider: PreviewProvider {
     }
   }
 }
+
+final class UnnamedPreviewMacroNameTests: XCTestCase {
+  private let fileID = "MyApp/LoginView.swift"
+
+  private func macro(line: Int, named name: String? = nil) -> PreviewType {
+    let previews = name == nil ? UnnamedPreviewProvider._allPreviews : NamedPreviewProvider._allPreviews
+    return PreviewType(
+      typeName: "$s5MyApp9LoginViewV13Preview_\(line)fMf_15PreviewRegistryMc",
+      fileID: fileID,
+      line: line,
+      previews: previews.map { Preview(preview: $0, type: UnnamedPreviewProvider.self) }
+    )
+  }
+
+  private func imageNames(_ previews: [PreviewType]) -> [String] {
+    let resolver = SnapshotTest.FileNameResolver(previews: previews)
+    return SnapshotTest.logicalImageNames(previews: previews, fileNameResolver: resolver, environment: [:])
+  }
+
+  func testUnnamedMacrosAreNamedByOrderInFile() {
+    XCTAssertEqual(
+      imageNames([macro(line: 120), macro(line: 80), macro(line: 100, named: "Check")]),
+      [
+        "MyApp_LoginView.swift_Preview_2.png",
+        "MyApp_LoginView.swift_Preview.png",
+        "MyApp_LoginView.swift_Check.png",
+      ]
+    )
+  }
+
+  func testMovingUnnamedMacroKeepsItsName() {
+    XCTAssertEqual(imageNames([macro(line: 403)]), imageNames([macro(line: 409)]))
+  }
+
+  func testResolverExposesDisplayNameForUnnamedMacro() {
+    let preview = macro(line: 12)
+    let resolver = SnapshotTest.FileNameResolver(previews: [preview])
+    XCTAssertEqual(resolver.displayName(typeName: preview.typeName, previewIndex: 0), "Preview")
+  }
+}
+
+private struct UnnamedPreviewProvider: PreviewProvider {
+  static var previews: some View {
+    Text("Unnamed")
+  }
+}
+
+private struct NamedPreviewProvider: PreviewProvider {
+  static var previews: some View {
+    Text("Named")
+      .previewDisplayName("Check")
+  }
+}
